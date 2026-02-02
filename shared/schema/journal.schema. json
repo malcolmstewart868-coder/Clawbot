@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "JournalEntry",
+  "type": "object",
+  "required": ["ts", "level", "event"],
+  "properties": {
+    "ts": { "type": "integer" },
+    "level": { "type": "string", "enum": ["info", "warn", "error"] },
+    "event": { "type": "string" },
+    "details": { "type": "object", "additionalProperties": true }
+  }
+}

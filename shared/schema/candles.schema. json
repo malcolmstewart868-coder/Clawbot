@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Candle",
+  "type": "object",
+  "required": ["ts", "open", "high", "low", "close", "volume"],
+  "properties": {
+    "ts": { "type": "integer", "description": "Unix timestamp (ms)" },
+    "open": { "type": "number" },
+    "high": { "type": "number" },
+    "low": { "type": "number" },
+    "close": { "type": "number" },
+    "volume": { "type": "number" }
+  }
+}
