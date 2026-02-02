@@ -1,0 +1,21 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Node / TS
+node_modules/
+dist/
+*.log
+.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/
+
+# Data / journals (keep local unless you decide otherwise)
+storage/
+*.sqlite
