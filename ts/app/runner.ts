@@ -1,11 +1,12 @@
-// ts/app/runner.ts
+import type { ExchangeAdapter } from "../adapters/exchange";
 
 import { evaluateTradeManagement, DEFAULT_TM_PARAMS } from "../core/guardrails/tradeManagement";
 import type { TradeLike, TradeManagementState } from "../core/guardrails/tradeManagement";
-import type { ExchangeAdapter } from "../adapters/exchange";
+
 
 import { makePaperAdapter } from "../adapters/paperAdapter";
 import { makeBinanceAdapter } from "../adapters/binanceAdapter";
+
 
 import { applyTradeManagement } from "./applyTradeManagement";
 import { buildScenarios, profitR } from "./simTrades";
