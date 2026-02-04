@@ -1,26 +1,41 @@
-// ts/app/guardrailsExecutor.ts
+// ts/app/runner.ts
+
 import { evaluateTradeManagement, DEFAULT_TM_PARAMS } from "../core/guardrails/tradeManagement";
-import type { ExchangeAdapter } from "../adapters/exchange";
 import type { TradeLike, TradeManagementState } from "../core/guardrails/tradeManagement";
-import { makeBinanceAdapter } from "../adapters/binanceAdapter";
+import type { ExchangeAdapter } from "../adapters/exchange";
+
 import { makePaperAdapter } from "../adapters/paperAdapter";
-
-// ...
-
-const adapter =
-  process.env.EXCHANGE === "paper" ? makePaperAdapter() : makeBinanceAdapter();
+import { makeBinanceAdapter } from "../adapters/binanceAdapter";
 
 import { applyTradeManagement } from "./applyTradeManagement";
 import { buildScenarios, profitR } from "./simTrades";
 
 function sleep(ms: number) {
-  return new Promise(res => setTimeout(res, ms));
+  return new Promise<void>((res) => setTimeout(res, ms));
+}
+
+function makeExchange(): ExchangeAdapter {
+  const ex = (process.env.EXCHANGE ?? "paper").toLowerCase();
+  return ex === "binance" ? makeBinanceAdapter() : makePaperAdapter();
+}
+
+type Side = "long" | "short";
+
+function toSide(v: unknown): Side {
+  const s = String(v).toLowerCase();
+  return s === "short" ? "short" : "long";
+}
+
+function toTradeLike(t: TradeLike): TradeLike {
+  // Ensure side is exactly "long" | "short"
+  return { ...t, side: toSide(t.side) };
 }
 
 export async function run() {
-  const exchange = makeBinanceAdapter();
+  const exchange = makeExchange();
 
   console.log("🟢 Clawbot runner started (SIM MODE)");
+  console.log(`🔧 EXCHANGE=${(process.env.EXCHANGE ?? "paper").toLowerCase()}`);
 
   const scenarios = buildScenarios();
 
@@ -29,8 +44,16 @@ export async function run() {
     console.log("▶ Scenario:", sc.name);
     console.log("==============================");
 
-    // Each scenario simulates time steps
+    // Keep TM state across ticks for THIS scenario/trade
+    const tm: TradeManagementState = {
+      beApplied: false,
+      bePlusApplied: false,
+      tp1Done: false,
+      runnerActive: false,
+    };
+
     for (const mark of sc.marks) {
+      // Update simulated price/mark
       sc.trade.mark = mark;
 
       const r = profitR(sc.trade);
@@ -38,92 +61,22 @@ export async function run() {
         `tick mark=${mark} R=${r.toFixed(2)} curStop=${sc.trade.currentStop ?? "n/a"}`
       );
 
-      // THIS is the key call: guardrails -> executor -> adapter
-      await applyTradeManagement(exchange, sc.trade as any, { mark });
+      // Strong typing: TradeLike in, TradeLike out
+      const trade: TradeLike = toTradeLike(sc.trade);
 
-      await sleep(250);
+      // Guardrails: get actions
+      const result = evaluateTradeManagement(trade, tm, mark, DEFAULT_TM_PARAMS);
+      const actions = result.actions;
+
+      // Apply actions through adapter + update stop on trade (inside applyTradeManagement)
+      await applyTradeManagement(exchange, trade, actions);
+
+      // Keep scenario trade in sync for next tick logs
+      sc.trade.currentStop = trade.currentStop;
+
+      await sleep(150);
     }
   }
 
   console.log("\n✅ SIM DONE. Runner exiting.");
-}
-
-async function startTrading(opts: { exchange: ExchangeAdapter }) {
-  // minimal starter: placeholder for the real trading loop
-  const { exchange } = opts;
-  // no-op for now; ensure the function exists to satisfy callers
-  return Promise.resolve();
-}
-
-// Keep these reason strings stable — you already used them in the smoke test.
-type TMAction = {
-  reason: "tp1_partial" | "be" | "be_plus" | "runner_trail";
-  closePct?: number;     // 0.5 means close 50%
-  newStop?: number;      // new stop level
-  profitR: number;
-  oldStop: number;
-};
-
-export async function applyGuardrailsToTrade(params: {
-  trade: TradeLike;
-  lastPrice: number;
-  adapter: ExchangeAdapter;
-  // optional: for journaling
-  onLog?: (line: Record<string, unknown>) => void;
-  tm?: TradeManagementState;
-}): Promise<{ ok: true } | { ok: false; err: string }> {
-  const { trade, lastPrice, adapter, onLog, tm = {} as TradeManagementState } = params;
-
-  const result = evaluateTradeManagement(trade, tm, lastPrice, DEFAULT_TM_PARAMS);
-  const actions = result.actions as TMAction[];
-
-  for (const a of actions) {
-    onLog?.({
-      kind: "tm_action",
-      symbol: trade.symbol,
-      tradeId: trade.id,
-      reason: a.reason,
-      closePct: a.closePct ?? null,
-      newStop: a.newStop ?? null,
-      profitR: a.profitR,
-      oldStop: a.oldStop,
-      ts: Date.now(),
-    });
-
-    // 1) partial close
-    if (typeof a.closePct === "number" && a.closePct > 0) {
-      const qtyToClose = roundQty(trade.size * a.closePct);
-      if (qtyToClose > 0) {
-        const reduceSide = trade.side === "long" ? "sell" : "buy";
-        const r = await adapter.reducePosition({
-          symbol: trade.symbol,
-          side: reduceSide,
-          qty: qtyToClose,
-          reason: a.reason,
-        });
-        if (!r.ok) return { ok: false, err: `reducePosition failed: ${r.err}` };
-      }
-    }
-
-    // 2) stop update (BE / BE+ / runner trail)
-    if (typeof a.newStop === "number" && Number.isFinite(a.newStop)) {
-      const r = await adapter.updateStop({
-        symbol: trade.symbol,
-        stopPrice: a.newStop,
-        reason: a.reason,
-      });
-      if (!r.ok) return { ok: false, err: `updateStop failed: ${r.err}` };
-
-      // Keep local trade state in sync (so next eval uses the updated stop)
-      trade.currentStop = a.newStop;
-    }
-  }
-
-  return { ok: true };
-}
-
-function roundQty(q: number): number {
-  // basic safe rounding; later we’ll use exchange step sizes
-  const r = Math.floor(q * 1000) / 1000;
-  return r > 0 ? r : 0;
 }
