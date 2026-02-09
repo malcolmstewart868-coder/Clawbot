@@ -2,10 +2,15 @@ import { makePaperAdapter } from "../adapters/paperAdapter";
 import { makeBinanceAdapter } from "../adapters/binanceAdapter";
 import type { ExchangeAdapter } from "../adapters/exchange";
 
+import {
+  evaluateTradeManagement,
+  DEFAULT_TM_PARAMS,
+} from "../core/guardrails/tradeManagement";
 
 import type { TradeLike, TradeManagementState } from "../core/guardrails/tradeManagement";
 
 import { applyTradeManagement } from "./applyTradeManagement";
+import { SimTrade } from "./simTrades";
 import { buildScenarios, profitR } from "./simTrades";
 
 function sleep(ms: number) {
@@ -24,7 +29,7 @@ function toSide(v: unknown): Side {
   return s === "short" ? "short" : "long";
 }
 
-function toTradeLike(t: TradeLike): TradeLike {
+function toTradeLike(t: any): TradeLike {
   // Ensure side is exactly "long" | "short"
   return { ...t, side: toSide(t.side) };
 }
@@ -37,44 +42,38 @@ export async function run() {
 
   const scenarios = buildScenarios();
 
-  for (const sc of scenarios) {
-    console.log("\n==============================");
-    console.log("▶ Scenario:", sc.name);
-    console.log("==============================");
+for (const sc of scenarios) {
+  console.log("\n==============================");
+  console.log("▶ Scenario:", sc.name);
+  console.log("==============================");
 
-    // Keep TM state across ticks for THIS scenario/trade
-    const tm: TradeManagementState = {
-      beApplied: false,
-      bePlusApplied: false,
-      tp1Done: false,
-      runnerActive: false,
-    };
+  const tm: TradeManagementState = {
+    beApplied: false,
+    bePlusApplied: false,
+    tp1Done: false,
+    runnerActive: false,
+  };
 
-    for (const mark of sc.marks) {
-      // Update simulated price/mark
-      sc.trade.mark = mark;
+  for (const mark of sc.marks) {
+    (sc.trade as SimTrade).mark = mark;
 
-      const r = profitR(sc.trade);
-      console.log(
-        `tick mark=${mark} R=${r.toFixed(2)} curStop=${sc.trade.currentStop ?? "n/a"}`
-      );
+    const r = profitR(sc.trade as SimTrade);
+    console.log(`tick mark=${mark} R=${r.toFixed(2)} curStop=${sc.trade.currentStop ?? "n/a"}`);
 
-      // Strong typing: TradeLike in, TradeLike out
-      const trade: TradeLike = toTradeLike(sc.trade);
+    const { mark: _m, ...tradeLike } = sc.trade as SimTrade;
+    const trade: TradeLike = toTradeLike(tradeLike);
 
-      // Guardrails: get actions
-      const result = evaluateTradeManagement(trade, tm, mark, DEFAULT_TM_PARAMS);
-      const actions = result.actions;
+    const result = evaluateTradeManagement(trade, tm, mark, DEFAULT_TM_PARAMS);
+    await applyTradeManagement(exchange, trade, result.actions);
 
-      // Apply actions through adapter + update stop on trade (inside applyTradeManagement)
-      await applyTradeManagement(exchange, trade, actions);
+    sc.trade.currentStop = trade.currentStop;
 
-      // Keep scenario trade in sync for next tick logs
-      sc.trade.currentStop = trade.currentStop;
-
-      await sleep(150);
-    }
+    await sleep(150);
   }
+}
+
 
   console.log("\n✅ SIM DONE. Runner exiting.");
+
+
 }
