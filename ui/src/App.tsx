@@ -6,6 +6,10 @@ type StatusPayload = {
   last?: string[];
 };
 
+type EventPayload =
+  | { hello: true; last?: string[] }
+  | { line: string; ts?: number };
+
 export default function App() {
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [loading, setLoading] = useState(false);
@@ -14,15 +18,18 @@ export default function App() {
   // log handling
   const logRef = useRef<HTMLPreElement | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [logs, setLogs] = useState<string[]>([]);
 
   // ---------- API calls ----------
-  async function refresh() {
+  async function refreshStatus() {
     try {
       setErr(null);
       const res = await fetch("/api/status");
       if (!res.ok) throw new Error(`status ${res.status}`);
       const data = (await res.json()) as StatusPayload;
       setStatus(data);
+      // snapshot sync (useful if SSE dropped)
+      if (data.last) setLogs(data.last);
     } catch (e: any) {
       setErr(e?.message || "failed to load status");
     }
@@ -34,7 +41,7 @@ export default function App() {
       setErr(null);
       const res = await fetch("/api/start", { method: "POST" });
       if (!res.ok) throw new Error(`start ${res.status}`);
-      await refresh();
+      await refreshStatus();
     } catch (e: any) {
       setErr(e?.message || "failed to start");
     } finally {
@@ -48,7 +55,7 @@ export default function App() {
       setErr(null);
       const res = await fetch("/api/stop", { method: "POST" });
       if (!res.ok) throw new Error(`stop ${res.status}`);
-      await refresh();
+      await refreshStatus();
     } catch (e: any) {
       setErr(e?.message || "failed to stop");
     } finally {
@@ -56,11 +63,48 @@ export default function App() {
     }
   }
 
-  // ---------- lifecycle ----------
+  // ---------- lifecycle: status polling ----------
   useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 1500);
+    refreshStatus();
+    const t = setInterval(refreshStatus, 1500);
     return () => clearInterval(t);
+  }, []);
+
+  // ---------- lifecycle: LIVE logs via SSE ----------
+  useEffect(() => {
+    // connect to SSE stream
+    const es = new EventSource("/api/events");
+
+    es.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data) as EventPayload;
+
+        // hello packet: includes snapshot
+        if ("hello" in msg && msg.hello) {
+          if (Array.isArray(msg.last)) setLogs(msg.last);
+          return;
+        }
+
+        // normal line packet
+        if ("line" in msg && typeof msg.line === "string") {
+          setLogs((prev) => {
+            const next = [...prev, msg.line];
+            return next.length > 300 ? next.slice(-300) : next;
+          });
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    es.onerror = () => {
+      // SSE auto-retries in many cases; we show soft warning only
+      setErr((prev) => prev ?? "Live logs disconnected (SSE). Refresh still works.");
+    };
+
+    return () => {
+      es.close();
+    };
   }, []);
 
   // ---------- auto-scroll logs ----------
@@ -69,7 +113,7 @@ export default function App() {
     const el = logRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [status?.last, autoScroll]);
+  }, [logs, autoScroll]);
 
   const running = !!status?.running;
 
@@ -96,12 +140,12 @@ export default function App() {
         <button onClick={stop} disabled={loading || !running}>
           Stop Runner
         </button>
-        <button onClick={refresh} disabled={loading}>
+        <button onClick={refreshStatus} disabled={loading}>
           Refresh
         </button>
       </div>
 
-      <h3 style={{ marginTop: 20 }}>Recent Logs</h3>
+      <h3 style={{ marginTop: 20 }}>Live Logs</h3>
 
       <pre
         ref={logRef}
@@ -120,13 +164,11 @@ export default function App() {
           padding: 12,
           borderRadius: 8,
           minHeight: 160,
-          maxHeight: 320,
+          maxHeight: 340,
           overflow: "auto",
         }}
       >
-        {(status?.last && status.last.length)
-          ? status.last.join("\n")
-          : "(no logs yet)"}
+        {logs.length ? logs.join("\n") : "(no logs yet)"}
       </pre>
     </div>
   );
