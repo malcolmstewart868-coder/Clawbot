@@ -1,102 +1,108 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
-type StatusRes = {
+type StatusPayload = {
   ok: boolean;
-  running: boolean;
+  running?: boolean;
   last?: string[];
 };
 
 export default function App() {
-  const [connected, setConnected] = useState(false);
-  const [running, setRunning] = useState(false);
-  const [last, setLast] = useState<string[]>([]);
+  const [status, setStatus] = useState<StatusPayload | null>(null);
+  const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  async function refreshStatus() {
+  async function refresh() {
     try {
       setErr(null);
       const res = await fetch("/api/status");
-      if (!res.ok) throw new Error(`Status failed: ${res.status}`);
-      const data = (await res.json()) as StatusRes;
-
-      setConnected(true);
-      setRunning(!!data.running);
-      setLast(Array.isArray(data.last) ? data.last : []);
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data = (await res.json()) as StatusPayload;
+      setStatus(data);
     } catch (e: any) {
-      setConnected(false);
-      setErr(e?.message ?? "Unknown error");
+      setErr(e?.message || "failed to load status");
     }
   }
 
-  async function post(path: "/api/start" | "/api/stop") {
+  async function start() {
     try {
+      setLoading(true);
       setErr(null);
-      const res = await fetch(path, { method: "POST" });
-
-      // If server returns HTML error page, this prevents confusing alerts
-      const ct = res.headers.get("content-type") || "";
-      if (!res.ok) {
-        const body = await res.text();
-        throw new Error(body.includes("Cannot")
-          ? body.replace(/<[^>]*>/g, "").trim()
-          : `Request failed: ${res.status}`);
-      }
-
-      if (ct.includes("application/json")) {
-        await res.json();
-      }
-
-      await refreshStatus();
+      const res = await fetch("/api/start", { method: "POST" });
+      if (!res.ok) throw new Error(`start ${res.status}`);
+      await refresh();
     } catch (e: any) {
-      setErr(e?.message ?? "Unknown error");
+      setErr(e?.message || "failed to start");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function stop() {
+    try {
+      setLoading(true);
+      setErr(null);
+      const res = await fetch("/api/stop", { method: "POST" });
+      if (!res.ok) throw new Error(`stop ${res.status}`);
+      await refresh();
+    } catch (e: any) {
+      setErr(e?.message || "failed to stop");
+    } finally {
+      setLoading(false);
     }
   }
 
   useEffect(() => {
-    refreshStatus();
-    const t = setInterval(refreshStatus, 2000);
+    refresh();
+    const t = setInterval(refresh, 1500); // auto-refresh
     return () => clearInterval(t);
   }, []);
 
+  const running = !!status?.running;
+
   return (
-    <div style={{ padding: 24, fontFamily: "system-ui" }}>
+    <div style={{ padding: 24, fontFamily: "system-ui", maxWidth: 900 }}>
       <h1>🐾 Clawbot Control Panel</h1>
 
       <p>
-        Status:{" "}
-        <strong>
-          {connected ? (running ? "Runner Running" : "Connected (Idle)") : "Disconnected"}
-        </strong>
+        API: <strong>{status?.ok ? "Connected" : "Checking..."}</strong>
+        {"  |  "}
+        Runner: <strong>{running ? "RUNNING" : "STOPPED"}</strong>
       </p>
 
       {err && (
         <p style={{ color: "crimson" }}>
-          Error: {err}
+          Error: <strong>{err}</strong>
         </p>
       )}
 
-      <button onClick={() => post("/api/start")} disabled={!connected || running}>
-        Start Runner
-      </button>
-
-      <button
-        style={{ marginLeft: 12 }}
-        onClick={() => post("/api/stop")}
-        disabled={!connected || !running}
-      >
-        Stop Runner
-      </button>
-
-      <button style={{ marginLeft: 12 }} onClick={refreshStatus}>
-        Refresh
-      </button>
-
-      <div style={{ marginTop: 16 }}>
-        <h3 style={{ marginBottom: 8 }}>Recent Logs</h3>
-        <pre style={{ background: "#111", color: "#ddd", padding: 12, borderRadius: 8, maxHeight: 240, overflow: "auto" }}>
-          {last.length ? last.join("\n") : "(no logs yet)"}
-        </pre>
+      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        <button onClick={start} disabled={loading || running}>
+          Start Runner
+        </button>
+        <button onClick={stop} disabled={loading || !running}>
+          Stop Runner
+        </button>
+        <button onClick={refresh} disabled={loading}>
+          Refresh
+        </button>
       </div>
+
+      <h3 style={{ marginTop: 20 }}>Recent Logs</h3>
+      <pre
+        style={{
+          background: "#111",
+          color: "#eee",
+          padding: 12,
+          borderRadius: 8,
+          minHeight: 160,
+          overflow: "auto",
+        }}
+      >
+        {(status?.last && status.last.length)
+          ? status.last.join("\n")
+          : "(no logs yet)"}
+      </pre>
     </div>
   );
 }
+
