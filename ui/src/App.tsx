@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type StatusPayload = {
   ok: boolean;
@@ -6,8 +6,13 @@ type StatusPayload = {
   last?: string[];
 };
 
+type EventPayload =
+  | { hello: true; last?: string[] }
+  | { line: string; ts?: number };
+
 export default function App() {
   const [status, setStatus] = useState<StatusPayload | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -18,6 +23,9 @@ export default function App() {
       if (!res.ok) throw new Error(`status ${res.status}`);
       const data = (await res.json()) as StatusPayload;
       setStatus(data);
+
+      // keep logs aligned with server snapshot (useful if SSE drops)
+      if (data.last) setLogs(data.last);
     } catch (e: any) {
       setErr(e?.message || "failed to load status");
     }
@@ -53,11 +61,47 @@ export default function App() {
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 1500); // auto-refresh
-    return () => clearInterval(t);
+
+    // LIVE LOGS via SSE
+    const es = new EventSource("/api/events");
+
+    es.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data) as EventPayload;
+
+        // hello packet includes recent log snapshot
+        if ("hello" in msg && msg.hello) {
+          if (msg.last?.length) setLogs(msg.last);
+          return;
+        }
+
+        // normal line packet
+        if ("line" in msg) {
+          setLogs((prev) => {
+            const next = [...prev, msg.line];
+            return next.length > 200 ? next.slice(-200) : next; // cap client log size
+          });
+        }
+      } catch {
+        // ignore bad event payloads
+      }
+    };
+
+    es.onerror = () => {
+      // SSE can retry automatically; we just show a soft warning
+      setErr((prev) => prev ?? "Live logs disconnected (SSE). Try Refresh.");
+    };
+
+    return () => {
+      es.close();
+    };
   }, []);
 
   const running = !!status?.running;
+
+  const logText = useMemo(() => {
+    return logs.length ? logs.join("\n") : "(no logs yet)";
+  }, [logs]);
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", maxWidth: 900 }}>
@@ -87,7 +131,7 @@ export default function App() {
         </button>
       </div>
 
-      <h3 style={{ marginTop: 20 }}>Recent Logs</h3>
+      <h3 style={{ marginTop: 20 }}>Live Logs</h3>
       <pre
         style={{
           background: "#111",
@@ -98,11 +142,8 @@ export default function App() {
           overflow: "auto",
         }}
       >
-        {(status?.last && status.last.length)
-          ? status.last.join("\n")
-          : "(no logs yet)"}
+        {logText}
       </pre>
     </div>
   );
 }
-

@@ -1,5 +1,5 @@
 // ts/api/server.ts
-import express from "express";
+import express, { type Response } from "express";
 import cors from "cors";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
@@ -11,17 +11,22 @@ const PORT = Number(process.env.API_PORT ?? 3001);
 
 // --- simple in-memory log buffer + SSE clients ---
 const logBuf: string[] = [];
-const clients = new Set<express.Response>();
+const clients = new Set<Response>();
 
 function pushLog(line: string) {
-  const clean = line.replace(/\s+$/g, "");
+  const clean = String(line).replace(/\s+$/g, "");
   if (!clean) return;
 
   logBuf.push(clean);
   if (logBuf.length > 300) logBuf.splice(0, logBuf.length - 300);
 
+  const payload = `data: ${JSON.stringify({ line: clean, ts: Date.now() })}\n\n`;
   for (const res of clients) {
-    res.write(`data: ${JSON.stringify({ line: clean })}\n\n`);
+    try {
+      res.write(payload);
+    } catch {
+      // ignore dead clients
+    }
   }
 }
 
@@ -29,7 +34,7 @@ function pushLog(line: string) {
 let runnerProc: ChildProcessWithoutNullStreams | null = null;
 
 function isRunning() {
-  return !!runnerProc && !runnerProc.killed;
+  return !!runnerProc && runnerProc.exitCode === null;
 }
 
 function startRunner() {
@@ -38,10 +43,8 @@ function startRunner() {
     return;
   }
 
-  // IMPORTANT: adjust this command to your real runner entry if needed
-  // Example: "npm run runner" from inside /ts
   runnerProc = spawn("npm", ["run", "runner"], {
-    cwd: process.cwd(), // should be /Clawbot/ts when you launch server from /ts
+    cwd: process.cwd(), // start API from /Clawbot/ts so this points at /ts
     shell: true,
     env: process.env,
   });
@@ -49,8 +52,8 @@ function startRunner() {
   runnerProc.stdout.on("data", (d) => pushLog(`🟢 ${String(d)}`));
   runnerProc.stderr.on("data", (d) => pushLog(`🔴 ${String(d)}`));
 
-  runnerProc.on("close", (code) => {
-    pushLog(`⚪ runner stopped (code ${code})`);
+  runnerProc.on("close", (code, signal) => {
+    pushLog(`⚪ runner stopped (code ${code ?? "?"}, signal ${signal ?? "?"})`);
     runnerProc = null;
   });
 
@@ -58,14 +61,23 @@ function startRunner() {
 }
 
 function stopRunner() {
-  if (!runnerProc) {
+  if (!isRunning()) {
     pushLog("🟡 runner not running");
+    runnerProc = null;
     return;
   }
 
-  // gentle stop
-  runnerProc.kill("SIGINT");
-  pushLog("🟠 stop signal sent");
+  // gentle stop first
+  runnerProc!.kill("SIGINT");
+  pushLog("🟠 stop signal sent (SIGINT)");
+
+  // fallback (in case it ignores SIGINT)
+  setTimeout(() => {
+    if (isRunning()) {
+      runnerProc!.kill("SIGTERM");
+      pushLog("🟠 fallback stop sent (SIGTERM)");
+    }
+  }, 2500);
 }
 
 // --- API routes (ALL under /api) ---
@@ -86,15 +98,12 @@ app.get("/api/events", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
-  res.flushHeaders();
+  res.flushHeaders?.();
 
   clients.add(res);
 
-  // send a hello + recent logs
-  res.write(`data: ${JSON.stringify({ hello: true })}\n\n`);
-  for (const line of logBuf.slice(-20)) {
-    res.write(`data: ${JSON.stringify({ line })}\n\n`);
-  }
+  // hello + recent logs
+  res.write(`data: ${JSON.stringify({ hello: true, last: logBuf.slice(-50) })}\n\n`);
 
   req.on("close", () => {
     clients.delete(res);
