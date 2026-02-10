@@ -1,7 +1,7 @@
 // ts/api/server.ts
 import express from "express";
 import cors from "cors";
-import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 const app = express();
 app.use(cors());
@@ -18,36 +18,71 @@ function pushLog(line: string) {
   if (!clean) return;
 
   logBuf.push(clean);
-  if (logBuf.length > 500) logBuf.splice(0, logBuf.length - 500);
+  if (logBuf.length > 300) logBuf.splice(0, logBuf.length - 300);
 
   for (const res of clients) {
     res.write(`data: ${JSON.stringify({ line: clean })}\n\n`);
   }
 }
 
-let proc: ChildProcessWithoutNullStreams | null = null;
+// --- runner process control ---
+let runnerProc: ChildProcessWithoutNullStreams | null = null;
 
 function isRunning() {
-  return !!proc && !proc.killed;
+  return !!runnerProc && !runnerProc.killed;
+}
+
+function startRunner() {
+  if (isRunning()) {
+    pushLog("🟡 runner already running");
+    return;
+  }
+
+  // IMPORTANT: adjust this command to your real runner entry if needed
+  // Example: "npm run runner" from inside /ts
+  runnerProc = spawn("npm", ["run", "runner"], {
+    cwd: process.cwd(), // should be /Clawbot/ts when you launch server from /ts
+    shell: true,
+    env: process.env,
+  });
+
+  runnerProc.stdout.on("data", (d) => pushLog(`🟢 ${String(d)}`));
+  runnerProc.stderr.on("data", (d) => pushLog(`🔴 ${String(d)}`));
+
+  runnerProc.on("close", (code) => {
+    pushLog(`⚪ runner stopped (code ${code})`);
+    runnerProc = null;
+  });
+
+  pushLog("🟢 runner started");
 }
 
 function stopRunner() {
-  if (!proc) return;
-  try {
-    proc.kill();
-  } catch {}
-  proc = null;
+  if (!runnerProc) {
+    pushLog("🟡 runner not running");
+    return;
+  }
+
+  // gentle stop
+  runnerProc.kill("SIGINT");
+  pushLog("🟠 stop signal sent");
 }
 
-app.get("/status", (_req, res) => {
+// --- API routes (ALL under /api) ---
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, name: "clawbot-api" });
+});
+
+app.get("/api/status", (_req, res) => {
   res.json({
+    ok: true,
     running: isRunning(),
     last: logBuf.slice(-50),
   });
 });
 
-// Stream logs/events to the UI
-app.get("/events", (req, res) => {
+// Stream logs/events to the UI (SSE)
+app.get("/api/events", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -55,9 +90,9 @@ app.get("/events", (req, res) => {
 
   clients.add(res);
 
-  // send a small hello + recent logs
+  // send a hello + recent logs
   res.write(`data: ${JSON.stringify({ hello: true })}\n\n`);
-  for (const line of logBuf.slice(-25)) {
+  for (const line of logBuf.slice(-20)) {
     res.write(`data: ${JSON.stringify({ line })}\n\n`);
   }
 
@@ -66,76 +101,18 @@ app.get("/events", (req, res) => {
   });
 });
 
-app.post("/run/sim", (req, res) => {
-  if (isRunning()) {
-    return res.status(409).json({ ok: false, reason: "runner already active" });
-  }
-
-  const exchange = String(req.body?.exchange ?? "paper").toLowerCase();
-  pushLog(`🟢 API: launching SIM runner (exchange=${exchange})`);
-
-  // IMPORTANT: runner lives in ts/app/runner.ts
-  // We run it from the /ts folder so relative imports behave.
-  proc = spawn(
-    process.platform === "win32" ? "npx.cmd" : "npx",
-    ["ts-node", "app/runner.ts"],
-    {
-      cwd: require("node:path").join(process.cwd(), "ts"),
-      env: { ...process.env, EXCHANGE: exchange },
-    }
-  );
-
-  proc.stdout.on("data", (d) => pushLog(String(d)));
-  proc.stderr.on("data", (d) => pushLog(`🔴 ${String(d)}`));
-
-  proc.on("close", (code) => {
-    pushLog(`✅ runner ended (code=${code})`);
-    proc = null;
-  });
-
-  res.status(202).json({ ok: true });
+app.post("/api/start", (_req, res) => {
+  startRunner();
+  res.json({ ok: true, running: isRunning() });
 });
 
-app.post("/stop", (_req, res) => {
-  if (!isRunning()) return res.json({ ok: true, alreadyStopped: true });
-  pushLog("🟡 API: stopping runner");
+app.post("/api/stop", (_req, res) => {
   stopRunner();
-  res.json({ ok: true });
+  res.json({ ok: true, running: isRunning() });
 });
 
-// health check FIRST (before listen)
-app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, name: "clawbot-api" })
-);
-let runnerProc: import("node:child_process").ChildProcessWithoutNullStreams | null = null;
-
-function startRunner() {
-  if (runnerProc) return; // already running
-
-  // from ts/api/server.ts → go up one level into ts/, then app/runner.ts
-  runnerProc = spawn("npx", ["ts-node", "app/runner.ts"], {
-    cwd: process.cwd(),
-    env: process.env,
-  });
-
-  runnerProc.stdout.on("data", (d) => pushLog(`🐾 runner: ${d.toString()}`));
-  runnerProc.stderr.on("data", (d) => pushLog(`🧯 runner err: ${d.toString()}`));
-
-  runnerProc.on("close", (code) => {
-    pushLog(`⏹ runner stopped (code ${code})`);
-    runnerProc = null;
-  });
-
-  pushLog("▶️ runner started");
-}
-
-function stopRunner() {
-  if (!runnerProc) return;
-  runnerProc.kill("SIGINT"); // gentle stop
-  pushLog("🛑 stop signal sent");
-}
-
-// listen ONCE
+// --- start server ONCE ---
 app.listen(PORT, () => {
   console.log(`🟢 API listening on http://localhost:${PORT}`);
+  pushLog(`🟢 API listening on http://localhost:${PORT}`);
 });
