@@ -43,7 +43,25 @@ function toTradeLike(t: any): TradeLike {
   return { ...t, side: toSide(t.side) };
 }
 
-export async function run() {
+export async function run() { let ticks = 0;
+
+const hb = setInterval(() => {
+  emit("heartbeat", {
+    ticks,
+    mode: process.env.MODE ?? "sim",
+    exchange: (process.env.EXCHANGE ?? "paper").toLowerCase(),
+  });
+}, 2000);
+
+const stop = () => {
+  clearInterval(hb);
+  emit("runner_stopped");
+  process.exit(0);
+};
+
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
+
   const exchange = makeExchange();
 
   emit("runner_started", { mode: "sim" });
@@ -64,22 +82,34 @@ for (const sc of scenarios) {
     runnerActive: false,
   };
 
-  for (const mark of sc.marks) {
+  for (const mark of sc.marks)
+ {
   (sc.trade as SimTrade).mark = mark;
+
+  ticks++;  
 
   const t: any = sc.trade;
   const curStop =
     t.curStop ?? t.stop ?? t.sl ?? t.stopLoss ?? null;
 
   const r = profitR(sc.trade as SimTrade);
+  
+  const hb = setInterval(() => {
+  emit("heartbeat", {
+    ts: Date.now(),
+    ticks,
+    mode: process.env.MODE ?? "sim",
+    exchange: (process.env.EXCHANGE ?? "paper").toLowerCase(),
+  });
+}, 2000);
 
   emit("tick", {
+
     scenario: sc.name,
     mark,
     r: Number(r.toFixed(2)),
     curStop,
   });
-
   const { mark: _m, ...tradeLike } = sc.trade as SimTrade;
   const trade: TradeLike = toTradeLike(tradeLike);
 
@@ -89,11 +119,25 @@ for (const sc of scenarios) {
 
   sc.trade.currentStop = trade.currentStop;
 
-  await sleep(150);
+  if ((process.env.RUN_FOREVER ?? "0") === "1") {
+  emit("idle", { ts: Date.now(), note: "runner alive; waiting" });
+  
 }
 
 }
 
+}
+  clearInterval(hb);
+emit("runner_stopped");
 
-  emit("runner_stopped");
+}// ---- main entry (so ts-node actually runs the runner) ----
+if (require.main === module) {
+  run()
+    .then(() => {
+      console.log("✅ runner finished");
+    })
+    .catch((err) => {
+      console.error("❌ runner crashed:", err);
+      process.exitCode = 1;
+    });
 }
