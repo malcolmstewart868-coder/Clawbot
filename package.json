@@ -1,0 +1,13 @@
+{
+  "name": "clawbot-root",
+  "private": true,
+  "scripts": {
+    "boot": "concurrently -n API,UI -c auto \"npm run api\" \"npm run ui\"",
+    "api": "npm run dev --prefix ts",
+    "ui": "npm run dev --prefix ui",
+    "stop": "node scripts/stop-ports.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
