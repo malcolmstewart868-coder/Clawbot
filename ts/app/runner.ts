@@ -12,6 +12,15 @@ import type { TradeLike, TradeManagementState } from "../core/guardrails/tradeMa
 import { applyTradeManagement } from "./applyTradeManagement";
 import { SimTrade } from "./simTrades";
 import { buildScenarios, profitR } from "./simTrades";
+function emit(event: string, payload: any = {}) {
+  console.log(
+    JSON.stringify({
+      ts: Date.now(),
+      event,
+      ...payload,
+    })
+  );
+}
 
 function sleep(ms: number) {
   return new Promise<void>((res) => setTimeout(res, ms));
@@ -37,7 +46,8 @@ function toTradeLike(t: any): TradeLike {
 export async function run() {
   const exchange = makeExchange();
 
-  console.log("🟢 Clawbot runner started (SIM MODE)");
+  emit("runner_started", { mode: "sim" });
+
   console.log(`🔧 EXCHANGE=${(process.env.EXCHANGE ?? "paper").toLowerCase()}`);
 
   const scenarios = buildScenarios();
@@ -55,25 +65,35 @@ for (const sc of scenarios) {
   };
 
   for (const mark of sc.marks) {
-    (sc.trade as SimTrade).mark = mark;
+  (sc.trade as SimTrade).mark = mark;
 
-    const r = profitR(sc.trade as SimTrade);
-    console.log(`tick mark=${mark} R=${r.toFixed(2)} curStop=${sc.trade.currentStop ?? "n/a"}`);
+  const t: any = sc.trade;
+  const curStop =
+    t.curStop ?? t.stop ?? t.sl ?? t.stopLoss ?? null;
 
-    const { mark: _m, ...tradeLike } = sc.trade as SimTrade;
-    const trade: TradeLike = toTradeLike(tradeLike);
+  const r = profitR(sc.trade as SimTrade);
 
-    const result = evaluateTradeManagement(trade, tm, mark, DEFAULT_TM_PARAMS);
-    await applyTradeManagement(exchange, trade, result.actions);
+  emit("tick", {
+    scenario: sc.name,
+    mark,
+    r: Number(r.toFixed(2)),
+    curStop,
+  });
 
-    sc.trade.currentStop = trade.currentStop;
+  const { mark: _m, ...tradeLike } = sc.trade as SimTrade;
+  const trade: TradeLike = toTradeLike(tradeLike);
 
-    await sleep(150);
-  }
+  const result = evaluateTradeManagement(trade, tm, mark, DEFAULT_TM_PARAMS);
+
+  await applyTradeManagement(exchange, trade, result.actions);
+
+  sc.trade.currentStop = trade.currentStop;
+
+  await sleep(150);
+}
+
 }
 
 
-  console.log("\n✅ SIM DONE. Runner exiting.");
-
-
+  emit("runner_stopped");
 }
