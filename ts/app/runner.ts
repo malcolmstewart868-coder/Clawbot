@@ -94,6 +94,7 @@ for (const sc of scenarios) {
 intel.tick();
 
 const tradeAny: any = sc.trade;
+if (!sc.trade) intel.setState("idle");
 const snap = intel.snapshot(tradeAny);
 
 emit("intel", snap);
