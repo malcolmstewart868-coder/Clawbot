@@ -1,6 +1,7 @@
 import { makePaperAdapter } from "../adapters/paperAdapter";
 import { makeBinanceAdapter } from "../adapters/binanceAdapter";
 import type { ExchangeAdapter } from "../adapters/exchange";
+import { createIntel } from "../core/intel";
 
 import {
   evaluateTradeManagement,
@@ -45,6 +46,9 @@ function toTradeLike(t: any): TradeLike {
 
 export async function run() { let ticks = 0;
 
+const mode = ((process.env.EXCHANGE ?? "paper").toLowerCase() as "sim" | "paper" | "live");
+const intel = createIntel({ mode, exchange: mode });
+
 const hb = setInterval(() => {
   emit("heartbeat", {
     ticks,
@@ -86,7 +90,18 @@ for (const sc of scenarios) {
  {
   (sc.trade as SimTrade).mark = mark;
 
-  ticks++;  
+  ticks++;
+intel.bump();
+
+const tradeAny: any = sc.trade;
+const snap = intel.snapshot(tradeAny);
+
+emit("intel", snap);
+
+if (snap.state === "idle") {
+  await sleep(150);
+  continue;
+}
 
   const t: any = sc.trade;
   const curStop =
