@@ -12,8 +12,7 @@ export type IntelSnapshot = {
 };
 
 export type Intel = {
-  bump: () => number;
-  tick: () => number;
+  tick: () => number;                 // increment + return
   snapshot: (trade?: any) => IntelSnapshot;
   setState: (state: IntelState) => void;
 };
@@ -23,12 +22,8 @@ export function createIntel(opts: { mode: string; exchange: string }): Intel {
   let state: IntelState = "idle";
   let lastTrade: any | undefined = undefined;
 
-  function bump() {
-    ticks += 1;
-    return ticks;
-  }
-
   function tick() {
+    ticks += 1;
     return ticks;
   }
 
@@ -51,5 +46,5 @@ export function createIntel(opts: { mode: string; exchange: string }): Intel {
     };
   }
 
-  return { bump, tick, snapshot, setState };
+  return { tick, snapshot, setState };
 }

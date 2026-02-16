@@ -50,7 +50,7 @@ const mode = ((process.env.EXCHANGE ?? "paper").toLowerCase() as "sim" | "paper"
 const intel = createIntel({ mode, exchange: mode });
 
 const hb = setInterval(() => {
-  emit("heartbeat", {
+  emit("heartbeat",{
     ticks,
     mode: process.env.MODE ?? "sim",
     exchange: (process.env.EXCHANGE ?? "paper").toLowerCase(),
@@ -91,7 +91,7 @@ for (const sc of scenarios) {
   (sc.trade as SimTrade).mark = mark;
 
   ticks++;
-intel.bump();
+intel.tick();
 
 const tradeAny: any = sc.trade;
 const snap = intel.snapshot(tradeAny);
