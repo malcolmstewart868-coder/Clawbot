@@ -90,7 +90,8 @@ for (const sc of scenarios) {
  {
   (sc.trade as SimTrade).mark = mark;
 
-  ticks++;
+  
+ticks++;
 intel.tick();
 
 const tradeAny: any = sc.trade;
@@ -135,19 +136,23 @@ if (snap.state === "idle") {
 
   sc.trade.currentStop = trade.currentStop;
 
-  if ((process.env.RUN_FOREVER ?? "0") === "1") {
+ }
+// ---- service mode: keep alive after normal run ----
+if ((process.env.RUN_FOREVER ?? "0") === "1") {
   emit("idle", { ts: Date.now(), note: "runner alive; waiting" });
-  
-}
-
+  // keep process alive
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    await sleep(1000);
+  }
 }
 
 }
   clearInterval(hb);
-emit("runner_stopped");
+  emit("runner_stopped");
 
 }// ---- main entry (so ts-node actually runs the runner) ----
-if (require.main === module) {
+  if (require.main === module) {
   run()
     .then(() => {
       console.log("✅ runner finished");
@@ -156,4 +161,4 @@ if (require.main === module) {
       console.error("❌ runner crashed:", err);
       process.exitCode = 1;
     });
-}
+  }
