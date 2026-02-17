@@ -1,7 +1,7 @@
 import { makePaperAdapter } from "../adapters/paperAdapter";
 import { makeBinanceAdapter } from "../adapters/binanceAdapter";
 import type { ExchangeAdapter } from "../adapters/exchange";
-import { createIntel } from "../core/intel";
+import { createIntel } from "../core/intel/index";
 
 import {
   evaluateTradeManagement,
@@ -46,8 +46,11 @@ function toTradeLike(t: any): TradeLike {
 
 export async function run() { let ticks = 0;
 
+const exchangeName = (process.env.EXCHANGE ?? "paper").toLowerCase();
 const mode = ((process.env.EXCHANGE ?? "paper").toLowerCase() as "sim" | "paper" | "live");
-const intel = createIntel({ mode, exchange: mode });
+const intel = createIntel({ mode, exchange: exchangeName });
+intel.setBot("running"); 
+intel.setTrade("idle", false);
 
 const hb = setInterval(() => {
   emit("heartbeat",{
@@ -66,7 +69,7 @@ const stop = () => {
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 
-  const exchange = makeExchange();
+  const ex = makeExchange();
 
   emit("runner_started", { mode: "sim" });
 
@@ -89,18 +92,17 @@ for (const sc of scenarios) {
   for (const mark of sc.marks)
  {
   (sc.trade as SimTrade).mark = mark;
-
   
-ticks++;
+
 intel.tick();
 
 const tradeAny: any = sc.trade;
-if (!sc.trade) intel.setState("idle");
+if (!sc.trade) { intel.setBot("idle"); intel.setTrade("idle", false); }
 const snap = intel.snapshot(tradeAny);
 
 emit("intel", snap);
 
-if (snap.state === "idle") {
+if (snap.state.bot !== "running") {
   await sleep(150);
   continue;
 }
@@ -132,7 +134,7 @@ if (snap.state === "idle") {
 
   const result = evaluateTradeManagement(trade, tm, mark, DEFAULT_TM_PARAMS);
 
-  await applyTradeManagement(exchange, trade, result.actions);
+  await applyTradeManagement(ex, trade, result.actions);
 
   sc.trade.currentStop = trade.currentStop;
 

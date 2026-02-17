@@ -1,7 +1,3 @@
-// ts/core/intel/intel.ts
-
-import { run } from "../../app/runner";
-
 export type BotMode = "idle" | "running" | "paused" | "halted";
 
 export type TradeLifecycle =
