@@ -12,7 +12,8 @@ import {
   type MgmtAction,
 } from "../core/guardrails/tradeManagement";
 
-import { choosePosture, type Posture, type VolBand } from "../core/guardrails/posture";
+import { createCalmstackV1 } from "../core/calmstack/calmstack";
+
 
 import { applyTradeManagement } from "./applyTradeManagement";
 import { SimTrade, buildScenarios, profitR } from "./simTrades";
@@ -67,6 +68,8 @@ function toTradeLike(t: any): TradeLike {
 }
 
 export async function run() { let ticks = 0;
+
+const calm = createCalmstackV1({ maxTradesPerSession: 2 });
 
 const exchangeName = (process.env.EXCHANGE ?? "paper").toLowerCase();
 const mode = ((process.env.EXCHANGE ?? "paper").toLowerCase() as "sim" | "paper" | "live");
@@ -136,6 +139,19 @@ const snap = intel.snapshot(tradeAny);
 
 const band = snap.state.vol.band;              // VolBand
 const positionOpen = !!snap.state.positionOpen;
+
+const cs = calm.step({
+  band,
+  positionOpen,
+  mtfOk: false,          // TODO wire real signal
+  locationOk: true,      // TODO wire real signal
+  displacementOk: false, // TODO wire real signal
+  uncertaintyClear: true,
+  m15ArmId: null,
+  postureOverride: (process.env.INTERNAL_MODE as any) || undefined,
+});
+
+emit("calmstack_v1", cs);
 
 // env override (typed)
 const postureOverride = process.env.INTERNAL_MODE as Posture | undefined;
