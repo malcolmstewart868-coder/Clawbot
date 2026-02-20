@@ -1,18 +1,36 @@
 import { makePaperAdapter } from "../adapters/paperAdapter";
 import { makeBinanceAdapter } from "../adapters/binanceAdapter";
 import type { ExchangeAdapter } from "../adapters/exchange";
+
 import { createIntel } from "../core/intel/index";
 
 import {
   evaluateTradeManagement,
   DEFAULT_TM_PARAMS,
+  type TradeLike,
+  type TradeManagementState,
+  type MgmtAction,
 } from "../core/guardrails/tradeManagement";
 
-import type { TradeLike, TradeManagementState } from "../core/guardrails/tradeManagement";
+import { choosePosture, type Posture, type VolBand } from "../core/guardrails/posture";
 
 import { applyTradeManagement } from "./applyTradeManagement";
-import { SimTrade } from "./simTrades";
-import { buildScenarios, profitR } from "./simTrades";
+import { SimTrade, buildScenarios, profitR } from "./simTrades";
+import { entryGateAll } from "../core/guardrails/entryGate";
+import { _email } from "zod/v4/core";
+
+function gateActionsByPosture(posture: Posture, actions: MgmtAction[]) {
+  if (posture === "aggressive") return actions;
+
+  if (posture === "balanced") {
+    // freeze trailing only
+    return actions.filter(a => a.reason !== "runner_trail");
+  }
+
+  // defensive: pure safety
+  return actions.filter(a => a.reason === "be" || a.reason === "be_plus");
+}
+
 function emit(event: string, payload: any = {}) {
   console.log(
     JSON.stringify({
@@ -23,11 +41,15 @@ function emit(event: string, payload: any = {}) {
   );
 }
 
-function sleep(ms: number) {
+  function sleep(ms: number) {
   return new Promise<void>((res) => setTimeout(res, ms));
 }
+  function chooseVolMode(band: string | undefined, positionOpen: boolean) {
+  if (band !== "extreme") return "NORMAL";
+  return positionOpen ? "MANAGE_ONLY" : "PAUSE_ENTRIES";
+}
 
-function makeExchange(): ExchangeAdapter {
+  function makeExchange(): ExchangeAdapter {
   const ex = (process.env.EXCHANGE ?? "paper").toLowerCase();
   return ex === "binance" ? makeBinanceAdapter() : makePaperAdapter();
 }
@@ -52,12 +74,12 @@ const intel = createIntel({ mode, exchange: exchangeName });
 intel.setBot("running"); 
 intel.setTrade("idle", false);
 
+let recoveryTicks = 0;
+
 const hb = setInterval(() => {
   emit("heartbeat",{
     ticks,
-    mode: process.env.MODE ?? "sim",
-    exchange: (process.env.EXCHANGE ?? "paper").toLowerCase(),
-  });
+   });
 }, 2000);
 
 const stop = () => {
@@ -88,24 +110,51 @@ for (const sc of scenarios) {
     tp1Done: false,
     runnerActive: false,
   };
+   let prevPrice: number | null = null;
 
   for (const mark of sc.marks)
  {
   (sc.trade as SimTrade).mark = mark;
   
+// --- VOL FEED (tick-based TR proxy) ---
+const price =
+  typeof mark === "number"
+    ? mark
+    : Number((mark as any)?.price ?? (mark as any)?.mark ?? (mark as any)?.last ?? 0);
+
+  if (price > 0) {
+  const tr = prevPrice == null ? 0 : Math.abs(price - prevPrice);
+  intel.updateVol({ tr, price });  // ✅ ATR + band updates
+  prevPrice = price;
+}
 
 intel.tick();
 
 const tradeAny: any = sc.trade;
-if (!sc.trade) { intel.setBot("idle"); intel.setTrade("idle", false); }
+
 const snap = intel.snapshot(tradeAny);
+
+const band = snap.state.vol.band;              // VolBand
+const positionOpen = !!snap.state.positionOpen;
+
+// env override (typed)
+const postureOverride = process.env.INTERNAL_MODE as Posture | undefined;
+const posture: Posture = postureOverride ?? choosePosture({ band, positionOpen });
+
+
+emit("posture", { posture, band, positionOpen });
 
 emit("intel", snap);
 
-if (snap.state.bot !== "running") {
+if (!sc.trade) {
+  intel.setBot("idle");
+  intel.setTrade("idle", false);
   await sleep(150);
   continue;
+
 }
+  intel.setTrade(sc.trade ? "managing" : "idle", !!sc.trade);
+
 
   const t: any = sc.trade;
   const curStop =
@@ -113,30 +162,54 @@ if (snap.state.bot !== "running") {
 
   const r = profitR(sc.trade as SimTrade);
   
-  const hb = setInterval(() => {
-  emit("heartbeat", {
-    ts: Date.now(),
-    ticks,
-    mode: process.env.MODE ?? "sim",
-    exchange: (process.env.EXCHANGE ?? "paper").toLowerCase(),
-  });
-}, 2000);
-
-  emit("tick", {
+    emit("tick", {
 
     scenario: sc.name,
     mark,
     r: Number(r.toFixed(2)),
     curStop,
   });
-  const { mark: _m, ...tradeLike } = sc.trade as SimTrade;
-  const trade: TradeLike = toTradeLike(tradeLike);
 
-  const result = evaluateTradeManagement(trade, tm, mark, DEFAULT_TM_PARAMS);
+  // posture already computed above
+  const gate = entryGateAll({ posture, band, positionOpen });
 
-  await applyTradeManagement(ex, trade, result.actions);
+  emit("gate", { posture, band, positionOpen, gate });
 
-  sc.trade.currentStop = trade.currentStop;
+  if (!gate.allowAll) {
+  emit("paused", { reason: gate.reason, posture, band, positionOpen });
+
+  if (!positionOpen) {
+    // ✅ flat: hard stop (no entry attempts)
+    intel.setBot("paused");
+    intel.setTrade("idle", false); // keep trade lifecycle sane while flat
+    await sleep(150);
+    continue; // skip eval + actions entirely
+  }
+
+  // ✅ in-position: manage-only
+  // Keep bot running so BE/TP safety can still execute
+  intel.setBot("running");
+  intel.setTrade("managing", true);
+  // DO NOT continue — allow evaluateTradeManagement to run
+}
+ // skip evaluateTradeManagement + applyTradeManagement
+
+  const trade = sc.trade as TradeLike;
+  const mark = _m
+  const result = evaluateTradeManagement(trade, tm, _m, DEFAULT_TM_PARAMS);
+
+  const gatedActions = gateActionsByPosture(posture, result.actions);
+
+  if (band === "extreme") {
+  emit("vol_gate", {
+    band: band,
+    posture,
+    actionsIn: result.actions.length,
+    actionsOut: gatedActions.length,
+  });
+}
+
+await applyTradeManagement(ex, trade, gatedActions);
 
  }
 // ---- service mode: keep alive after normal run ----
@@ -153,8 +226,8 @@ if ((process.env.RUN_FOREVER ?? "0") === "1") {
   clearInterval(hb);
   emit("runner_stopped");
 
-}// ---- main entry (so ts-node actually runs the runner) ----
-  if (require.main === module) {
+  // ---- main entry (so ts-node actually runs the runner) ----
+  if (reconst trade: TradeLike = toTradeLike(tradeLike);quire.main === module) {
   run()
     .then(() => {
       console.log("✅ runner finished");

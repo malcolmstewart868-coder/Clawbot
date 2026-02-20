@@ -1,4 +1,4 @@
-export type BotMode = "idle" | "running" | "paused" | "halted";
+export type BotState = "idle" | "running" | "paused" | "halted";
 
 export type TradeLifecycle =
   | "idle"      // no position
@@ -18,7 +18,7 @@ export type VolState = {
 };
 
 export type IntelState = {
-  bot: BotMode;
+  bot: BotState;
   trade: TradeLifecycle;
   positionOpen: boolean;
   vol: VolState;
@@ -41,7 +41,7 @@ export type Intel = {
   snapshot: (trade?: any) => IntelSnapshot;
 
   // state writers (single write path)
-  setBot: (bot: BotMode) => void;
+  setBot: (bot: BotState) => void;
   setTrade: (trade: TradeLifecycle, positionOpen?: boolean) => void;
 
   // volatility update (rolling ATR window)
@@ -83,7 +83,7 @@ export function createIntel(opts: { mode: string; exchange: string }): Intel {
     return ticks;
   }
 
-  function setBot(bot: BotMode) {
+  function setBot(bot: BotState) {
     state = { ...state, bot };
   }
 
