@@ -18,7 +18,7 @@ import { createCalmstackV1 } from "../core/calmstack/calmstack";
 import { applyTradeManagement } from "./applyTradeManagement";
 import { SimTrade, buildScenarios, profitR } from "./simTrades";
 import { entryGateAll } from "../core/guardrails/entryGate";
-import { _email } from "zod/v4/core";
+import type { Posture } from "../core/guardrails/posture";
 
 function gateActionsByPosture(posture: Posture, actions: MgmtAction[]) {
   if (posture === "aggressive") return actions;
@@ -153,11 +153,7 @@ const cs = calm.step({
 
 emit("calmstack_v1", cs);
 
-// env override (typed)
-const postureOverride = process.env.INTERNAL_MODE as Posture | undefined;
-const posture: Posture = postureOverride ?? choosePosture({ band, positionOpen });
-
-
+const posture = cs.posture;
 emit("posture", { posture, band, positionOpen });
 
 emit("intel", snap);
@@ -210,10 +206,19 @@ if (!sc.trade) {
 }
  // skip evaluateTradeManagement + applyTradeManagement
 
-  const trade = sc.trade as TradeLike;
-  const mark = _m
-  const result = evaluateTradeManagement(trade, tm, _m, DEFAULT_TM_PARAMS);
+ // normalize trade shape (strip mark if present)
+const raw: any = sc.trade;
+let trade: TradeLike;
 
+if (raw && typeof raw === "object" && "mark" in raw) {
+  const { mark: _drop, ...rest } = raw;
+  trade = toTradeLike(rest);
+} else {
+  trade = toTradeLike(raw);
+}
+
+// mark is the loop variable
+const result = evaluateTradeManagement(trade, tm, mark, DEFAULT_TM_PARAMS);
   const gatedActions = gateActionsByPosture(posture, result.actions);
 
   if (band === "extreme") {
@@ -241,15 +246,11 @@ if ((process.env.RUN_FOREVER ?? "0") === "1") {
 }
   clearInterval(hb);
   emit("runner_stopped");
-
-  // ---- main entry (so ts-node actually runs the runner) ----
-  if (reconst trade: TradeLike = toTradeLike(tradeLike);quire.main === module) {
-  run()
-    .then(() => {
-      console.log("✅ runner finished");
-    })
+  if (require.main === module) {
+   run()
+    .then(() => console.log("✅ runner finished"))
     .catch((err) => {
       console.error("❌ runner crashed:", err);
       process.exitCode = 1;
-    });
+    });}
   }
