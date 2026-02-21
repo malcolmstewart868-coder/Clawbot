@@ -204,6 +204,13 @@ if (!sc.trade) {
   intel.setTrade("managing", true);
   // DO NOT continue — allow evaluateTradeManagement to run
 }
+if (!cs.allowEntry && !positionOpen) {
+  emit("paused", { reason: cs.skipReasons[0] ?? "calmstack blocked", cs });
+  intel.setBot("paused");
+  intel.setTrade("idle", false);
+  await sleep(150);
+  continue;
+}
  // skip evaluateTradeManagement + applyTradeManagement
 
  // normalize trade shape (strip mark if present)
