@@ -19,6 +19,7 @@ import { applyTradeManagement } from "./applyTradeManagement";
 import { SimTrade, buildScenarios, profitR } from "./simTrades";
 import { entryGateAll } from "../core/guardrails/entryGate";
 import type { Posture } from "../core/guardrails/posture";
+import { getSessionId, nowUtcMinus4, ymdKeyUtcMinus4, type SessionId } from "../core/guardrails/sessions";
 
 function gateActionsByPosture(posture: Posture, actions: MgmtAction[]) {
   if (posture === "aggressive") return actions;
@@ -77,6 +78,9 @@ const intel = createIntel({ mode, exchange: exchangeName });
 intel.setBot("running"); 
 intel.setTrade("idle", false);
 
+let activeSession: SessionId = "OFFSESSION";
+let dayKey = ymdKeyUtcMinus4(nowUtcMinus4());
+
 let recoveryTicks = 0;
 
 const hb = setInterval(() => {
@@ -134,7 +138,30 @@ const price =
 intel.tick();
 
 const tradeAny: any = sc.trade;
+// ---- Session window tracking (UTC−4) ----
+const wall = nowUtcMinus4();
+const nextSession = getSessionId(wall);
 
+// Daily reset marker (we'll use this when we add daily counters)
+const nextDayKey = ymdKeyUtcMinus4(wall);
+if (nextDayKey !== dayKey) {
+  dayKey = nextDayKey;
+  // later: reset daily counters here
+  emit("day_rollover", { dayKey });
+}
+
+// Session change → reset per-session trade cap
+if (nextSession !== activeSession) {
+  const prev = activeSession;
+  activeSession = nextSession;
+
+  // Reset only when entering a real session (and/or when leaving one—your call)
+  if (activeSession !== "OFFSESSION") {
+    calm.resetSession();
+  }
+
+  emit("session_change", { from: prev, to: activeSession });
+}
 const snap = intel.snapshot(tradeAny);
 
 const band = snap.state.vol.band;              // VolBand
