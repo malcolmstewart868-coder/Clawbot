@@ -7,6 +7,7 @@
   },
   "scripts": {
     "dev": "ts-node app/server.ts",
+    "loop": "npm run bot",
     "runner": "ts-node app/runner.ts",
     "typecheck": "tsc --noEmit",
     "test": "echo \"Error: no test specified\" && exit 1"
