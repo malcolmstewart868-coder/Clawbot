@@ -18,15 +18,15 @@
     "forceConsistentCasingInFileNames": true
   },
 
- "include": ["app/**/*.ts", "adapters/**/*.ts", "core/**/*.ts", "config/**/*.ts", "core/intel_legacy.ts.bak"]
-,
+"include": ["../src/**/*.ts"],
 
-  "exclude": [
-    "node_modules",
-    "**/.history",
-    "**/.vscode",
-    "**/AppData/**",
-    "**/storage/**",
-    "**/tests/**"
-  ]
+"exclude": [
+  "node_modules",
+  "MirrorModel",
+  "ui",
+  "**/.history",
+  "**/.vscode",
+  "**/AppData/**",
+  "**/History/**"
+]
 }
