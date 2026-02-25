@@ -4,6 +4,8 @@ import type { ExchangeAdapter } from "../adapters/exchange";
 
 import { createIntel } from "../core/intel/index";
 
+import { createCalmstackV1 } from "../core/calmstack";
+
 import {
   evaluateTradeManagement,
   DEFAULT_TM_PARAMS,
@@ -11,9 +13,6 @@ import {
   type TradeManagementState,
   type MgmtAction,
 } from "../core/guardrails/tradeManagement";
-
-import { createCalmstackV1 } from "../core/calmstack/calmstack";
-
 
 import { applyTradeManagement } from "./applyTradeManagement";
 import { SimTrade, buildScenarios, profitR } from "./simTrades";
@@ -175,7 +174,7 @@ const cs = calm.step({
   displacementOk: false, // TODO wire real signal
   uncertaintyClear: true,
   m15ArmId: null,
-  postureOverride: (process.env.INTERNAL_MODE as any) || undefined,
+  postureOverride: undefined,
 });
 
 emit("calmstack_v1", cs);
