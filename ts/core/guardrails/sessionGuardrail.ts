@@ -1,20 +1,45 @@
-// ts/core/guardrails/posture.ts
+export type GuardrailMode = "READY" | "LOCKED_OBSERVE" | "COOLDOWN_MODE";
 
-export type VolBand = "low" | "normal" | "high" | "extreme";
-export type Posture = "aggressive" | "normal" | "defensive";
+export type GuardrailOutput = {
+  allowTrade: boolean;
+  mode: GuardrailMode;
+  maxTrades: number;
+  remainingTrades: number;
+  reason?: string;
+};
 
-export function choosePosture(opts: {
-  band: VolBand;
-  positionOpen: boolean;
-}): Posture {
-  // If a position is already open, we don't restrict posture here;
-  // management logic should continue regardless.
-  if (opts.positionOpen) return "normal";
+export function createSessionGuardrail(opts?: { maxTrades?: number }) {
+  const maxTrades = Math.max(1, Number(opts?.maxTrades ?? 2));
+  let tradesTaken = 0;
 
-  // Volatility-based posture
-  if (opts.band === "extreme") return "defensive";
-  if (opts.band === "high") return "normal";
-  if (opts.band === "low") return "aggressive";
+  function snapshot(): GuardrailOutput {
+  const remainingTrades = Math.max(0, maxTrades - tradesTaken);
+  const locked = tradesTaken >= maxTrades;
 
-  return "normal";
+  return {
+    allowTrade: !locked,
+    mode: locked ? "LOCKED_OBSERVE" : "READY",
+    maxTrades,
+    remainingTrades,
+    reason: locked ? "max trades reached" : undefined,
+  };
+}
+
+  return {
+    snapshot,
+
+    canTrade(): GuardrailOutput {
+      return snapshot();
+    },
+
+    onTradeTaken(): GuardrailOutput {
+      tradesTaken += 1;
+      return snapshot();
+    },
+
+    resetSession(): GuardrailOutput {
+      tradesTaken = 0;
+      return snapshot();
+    },
+  };
 }

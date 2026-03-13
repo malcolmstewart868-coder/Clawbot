@@ -14,7 +14,6 @@ export type TradeLike = {
   size?: number;
   mark?: number;
 };
-
 export type TradeManagementState = {
   tp1Done: boolean;
   runnerActive: boolean;

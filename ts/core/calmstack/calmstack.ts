@@ -62,12 +62,8 @@ export function createCalmstackV1(opts?: { maxTradesPerSession?: number }) {
     const uncertaintyClear = input.uncertaintyClear ?? true;
     if (!uncertaintyClear) skipReasons.push("Skipped: uncertainty filter (no clarity)");
 
-    const guardrail = session.step({
-      mtfOk: input.mtfOk,
-      locationOk: input.locationOk,
-      displacementOk: input.displacementOk,
-      m15ArmId: input.m15ArmId ?? null,
-    });
+    const guardrail = session.canTrade();
+
 
     if (!input.mtfOk) skipReasons.push("Skipped: MTF Permission Stack not ready");
     if (!input.locationOk) skipReasons.push("Skipped: Location Gate blocked");
@@ -99,7 +95,7 @@ export function createCalmstackV1(opts?: { maxTradesPerSession?: number }) {
       ts: Date.now(),
       posture,
       mode,
-      tradesTaken: guardrail.tradesTaken,
+      tradesTaken: guardrail.maxTrades - guardrail.remainingTrades,
       allowEntry,
 
       mtfOk: input.mtfOk,

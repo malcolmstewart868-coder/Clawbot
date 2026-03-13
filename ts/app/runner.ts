@@ -23,7 +23,7 @@ import { getSessionId, nowUtcMinus4, ymdKeyUtcMinus4, type SessionId } from "../
 function gateActionsByPosture(posture: Posture, actions: MgmtAction[]) {
   if (posture === "aggressive") return actions;
 
-  if (posture === "balanced") {
+  if (posture === "defensive") {
     // freeze trailing only
     return actions.filter(a => a.reason !== "runner_trail");
   }
@@ -99,7 +99,7 @@ process.on("SIGTERM", stop);
 
   const ex = makeExchange();
 
-  emit("runner_started", { mode: "sim" });
+  emit("runner_started", { mode });
 
   console.log(`🔧 EXCHANGE=${(process.env.EXCHANGE ?? "paper").toLowerCase()}`);
 
@@ -156,7 +156,7 @@ if (nextSession !== activeSession) {
 
   // Reset only when entering a real session (and/or when leaving one—your call)
   if (activeSession !== "OFFSESSION") {
-    calm.resetSession();
+   // calm.resetSession();
   }
 
   emit("session_change", { from: prev, to: activeSession });
@@ -164,14 +164,14 @@ if (nextSession !== activeSession) {
 const snap = intel.snapshot(tradeAny);
 
 const band = snap.state.vol.band;              // VolBand
-const positionOpen = !!snap.state.positionOpen;
+const positionOpen: boolean = !!snap.state.positionOpen;
 
 const cs = calm.step({
   band,
   positionOpen,
-  mtfOk: false,          // TODO wire real signal
+  mtfOk: true,          // TODO wire real signal
   locationOk: true,      // TODO wire real signal
-  displacementOk: false, // TODO wire real signal
+  displacementOk: true, // TODO wire real signal
   uncertaintyClear: true,
   m15ArmId: null,
   postureOverride: undefined,
@@ -208,12 +208,26 @@ if (!sc.trade) {
     curStop,
   });
 
-  // posture already computed above
-  const gate = entryGateAll({ posture, band, positionOpen });
+  const mtfOk = true;
+const locationOk = true;
+const displacementOk = true;
+const uncertaintyClear = true;
 
-  emit("gate", { posture, band, positionOpen, gate });
 
-  if (!gate.allowAll) {
+const gate = entryGateAll({
+  mtfOk,
+  locationOk,
+  displacementOk,
+  uncertaintyClear,
+});
+
+  emit("gate_eval", {
+    allowTrade: gate.allowTrade,
+    //mode: gate.mode,
+    reason: gate.reason,
+    posture, band, positionOpen, gate });
+
+  if (!gate.allowTrade) {
   emit("paused", { reason: gate.reason, posture, band, positionOpen });
 
   if (!positionOpen) {
@@ -278,12 +292,15 @@ if ((process.env.RUN_FOREVER ?? "0") === "1") {
 
 }
   clearInterval(hb);
-  emit("runner_stopped");
-  if (require.main === module) {
-   run()
-    .then(() => console.log("✅ runner finished"))
-    .catch((err) => {
-      console.error("❌ runner crashed:", err);
-      process.exitCode = 1;
-    });}
-  }
+emit("runner_stopped");
+}
+
+console.log("🚀 runner entrypoint reached");
+
+run()
+  .then(() => console.log("✅ runner finished"))
+  .catch((err) => {
+    console.error("❌ runner crashed:", err);
+    process.exitCode = 1;
+  });
+  

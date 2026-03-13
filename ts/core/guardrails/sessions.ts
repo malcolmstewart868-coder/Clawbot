@@ -13,3 +13,12 @@ export function ymdKeyUtcMinus4(d: Date = new Date()): string {
   const day = String(dt.getUTCDate()).padStart(2, "0");
   return `${y}${m}${day}`;
 }
+
+export function nowUtcMinus4(d: Date = new Date()): Date {
+  const ms = d.getTime() + -4 * 60 * 60 * 1000;
+  return new Date(ms);
+}
+
+export function getSessionId(d: Date = new Date()): SessionId {
+  return ymdKeyUtcMinus4(d);
+}
