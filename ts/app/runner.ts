@@ -1,3 +1,4 @@
+import { updateObserverState } from "../api/observerState";
 import { makePaperAdapter } from "../adapters/paperAdapter";
 import { makeBinanceAdapter } from "../adapters/binanceAdapter";
 import type { ExchangeAdapter } from "../adapters/exchange";
@@ -65,6 +66,10 @@ function toSide(v: unknown): Side {
 function toTradeLike(t: any): TradeLike {
   // Ensure side is exactly "long" | "short"
   return { ...t, side: toSide(t.side) };
+}
+
+function inputBandToString(v: unknown) {
+  return typeof v === "string" ? v : String(v ?? "unknown");
 }
 
 export async function run() { let ticks = 0;
@@ -227,6 +232,37 @@ const gate = entryGateAll({
     reason: gate.reason,
     posture, band, positionOpen, gate });
 
+    updateObserverState({
+  engine: {
+    bot: snap.state.bot,
+    trade: snap.state.trade,
+    session: activeSession,
+    running: true,
+  },
+  calmstack: {
+    posture: cs.posture,
+    mode: cs.mode,
+    allowEntry: cs.allowEntry,
+    band: inputBandToString(cs.band ?? band),
+    tradesTaken: cs.tradesTaken,
+    skipReasons: cs.skipReasons ?? [],
+  },
+  guardrail: {
+    allowTrade: gate.allowTrade,
+    mode: cs.guardrail?.mode ?? "unknown",
+    maxTrades: cs.guardrail?.maxTrades ?? 0,
+    remainingTrades: cs.guardrail?.remainingTrades ?? 0,
+  },
+  position: {
+    open: !!snap.state.positionOpen,
+    symbol: snap.trade?.symbol,
+    side: snap.trade?.side,
+    entry: snap.trade?.entry,
+    stop: snap.trade?.currentStop ?? snap.trade?.initialStop ?? null,
+    mark: snap.trade?.mark ?? null,
+  },
+});
+
   if (!gate.allowTrade) {
   emit("paused", { reason: gate.reason, posture, band, positionOpen });
 
@@ -266,20 +302,29 @@ if (raw && typeof raw === "object" && "mark" in raw) {
 
 // mark is the loop variable
 const result = evaluateTradeManagement(trade, tm, mark, DEFAULT_TM_PARAMS);
-  const gatedActions = gateActionsByPosture(posture, result.actions);
+const gatedActions = gateActionsByPosture(posture, result.actions);
 
-  if (band === "extreme") {
+if (band === "extreme") {
   emit("vol_gate", {
-    band: band,
+    band,
     posture,
     actionsIn: result.actions.length,
     actionsOut: gatedActions.length,
   });
 }
 
-await applyTradeManagement(ex, trade, gatedActions);
+if (gatedActions.length > 0) {
+  const last = gatedActions[gatedActions.length - 1];
+  updateObserverState({
+    lastAction: {
+      type: last.reason ?? "action",
+      reason: last.reason,
+    },
+  });
+}
 
- }
+await applyTradeManagement(ex, trade, gatedActions);
+  
 // ---- service mode: keep alive after normal run ----
 if ((process.env.RUN_FOREVER ?? "0") === "1") {
   emit("idle", { ts: Date.now(), note: "runner alive; waiting" });
@@ -303,4 +348,4 @@ run()
     console.error("❌ runner crashed:", err);
     process.exitCode = 1;
   });
-  
+}

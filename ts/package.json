@@ -6,7 +6,7 @@
     "test": "tests"
   },
   "scripts": {
-    "dev": "ts-node app/server.ts",
+    "dev": "ts-node app/runner.ts",
     "loop": "npm run bot",
     "runner": "ts-node app/runner.ts",
     "typecheck": "tsc --noEmit",

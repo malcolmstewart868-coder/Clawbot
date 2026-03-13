@@ -1,3 +1,4 @@
+import { getObserverState, setObserverRunning } from "./observerState";
 // ts/api/server.ts
 import express, { type Response } from "express";
 import cors from "cors";
