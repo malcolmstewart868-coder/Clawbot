@@ -314,7 +314,9 @@ if (band === "extreme") {
 }
 
 if (gatedActions.length > 0) {
-  const last = gatedActions[gatedActions.length - 1];
+  const last = gatedActions.at(-1);
+
+if (last) {
   updateObserverState({
     lastAction: {
       type: last.reason ?? "action",
@@ -326,23 +328,24 @@ if (gatedActions.length > 0) {
 await applyTradeManagement(ex, trade, gatedActions);
   
 // ---- service mode: keep alive after normal run ----
-if ((process.env.RUN_FOREVER ?? "0") === "1") {
-  emit("idle", { ts: Date.now(), note: "runner alive; waiting" });
-  // keep process alive
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
+if ((process.env.RUN_FOREVER ?? "0") === "1") 
+{}
+   emit("idle", { ts: Date.now(), note: "runner alive; waiting" });
+   // keep process alive
+   // eslint-disable-next-line no-constant-condition
+   while (true) {
     await sleep(1000);
+    }
   }
-}
 
-}
+ }
   clearInterval(hb);
-emit("runner_stopped");
-}
+ emit("runner_stopped");
+ }
 
-console.log("🚀 runner entrypoint reached");
+ console.log("🚀 runner entrypoint reached");
 
-run()
+ run()
   .then(() => console.log("✅ runner finished"))
   .catch((err) => {
     console.error("❌ runner crashed:", err);

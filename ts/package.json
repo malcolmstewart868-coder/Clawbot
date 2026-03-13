@@ -9,6 +9,7 @@
     "dev": "ts-node app/runner.ts",
     "loop": "npm run bot",
     "runner": "ts-node app/runner.ts",
+    "api": "ts-node app/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

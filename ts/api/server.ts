@@ -44,19 +44,22 @@ function startRunner() {
     return;
   }
 
-  runnerProc = spawn("npm", ["run", "runner"], {
-    cwd: process.cwd(), // start API from /Clawbot/ts so this points at /ts
+  runnerProc = spawn("npm", ["run", "runner"],
+  {cwd: process.cwd(), // start API from /Clawbot/ts so this points at /ts
     shell: true,
     env: process.env,
   });
+    
+    setObserverRunning(true);
 
   runnerProc.stdout.on("data", (d) => pushLog(`🟢 ${String(d)}`));
   runnerProc.stderr.on("data", (d) => pushLog(`🔴 ${String(d)}`));
 
   runnerProc.on("close", (code, signal) => {
-    pushLog(`⚪ runner stopped (code ${code ?? "?"}, signal ${signal ?? "?"})`);
-    runnerProc = null;
-  });
+  setObserverRunning(false);
+  pushLog(`⚪ runner stopped (code ${code ?? "?"}, signal ${signal ?? "?"})`);
+  runnerProc = null;
+});
 
   pushLog("🟢 runner started");
 }
@@ -91,6 +94,13 @@ app.get("/api/status", (_req, res) => {
     ok: true,
     running: isRunning(),
     last: logBuf.slice(-50),
+  });
+});
+
+app.get("/api/observer", (_req, res) => {
+  res.json({
+    ok: true,
+    state: getObserverState(),
   });
 });
 
