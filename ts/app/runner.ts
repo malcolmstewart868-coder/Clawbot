@@ -1,27 +1,29 @@
-import { updateObserverState } from "../api/observerState";
-import { makePaperAdapter } from "../adapters/paperAdapter";
-import { makeBinanceAdapter } from "../adapters/binanceAdapter";
-import type { ExchangeAdapter } from "../adapters/exchange";
+  import { updateObserverState } from "../api/observerState";
+  import { makePaperAdapter } from "../adapters/paperAdapter";
+  import { makeBinanceAdapter } from "../adapters/binanceAdapter";
+  import type { ExchangeAdapter } from "../adapters/exchange";
 
-import { createIntel } from "../core/intel/index";
+  import { createIntel } from "../core/intel/index";
 
-import { createCalmstackV1 } from "../core/calmstack";
+  import { createCalmstackV1 } from "../core/calmstack";
 
-import {
+  import {
   evaluateTradeManagement,
   DEFAULT_TM_PARAMS,
   type TradeLike,
   type TradeManagementState,
   type MgmtAction,
-} from "../core/guardrails/tradeManagement";
+  } from "../core/guardrails/tradeManagement";
 
-import { applyTradeManagement } from "./applyTradeManagement";
-import { SimTrade, buildScenarios, profitR } from "./simTrades";
-import { entryGateAll } from "../core/guardrails/entryGate";
-import type { Posture } from "../core/guardrails/posture";
-import { getSessionId, nowUtcMinus4, ymdKeyUtcMinus4, type SessionId } from "../core/guardrails/sessions";
+  import { applyTradeManagement } from "./applyTradeManagement";
+  import { SimTrade, buildScenarios, profitR } from "./simTrades";
+  import { entryGateAll } from "../core/guardrails/entryGate";
+  import type { Posture } from "../core/guardrails/posture";
+  import { getSessionId, nowUtcMinus4, ymdKeyUtcMinus4, type SessionId } from "../core/guardrails/sessions";
 
-function gateActionsByPosture(posture: Posture, actions: MgmtAction[]) {
+  console.log("🔥 TOP-LEVEL runner.ts loaded");
+
+  function gateActionsByPosture(posture: Posture, actions: MgmtAction[]) {
   if (posture === "aggressive") return actions;
 
   if (posture === "defensive") {
@@ -31,9 +33,9 @@ function gateActionsByPosture(posture: Posture, actions: MgmtAction[]) {
 
   // defensive: pure safety
   return actions.filter(a => a.reason === "be" || a.reason === "be_plus");
-}
+  }
 
-function emit(event: string, payload: any = {}) {
+  function emit(event: string, payload: any = {}) {
   console.log(
     JSON.stringify({
       ts: Date.now(),
@@ -41,66 +43,70 @@ function emit(event: string, payload: any = {}) {
       ...payload,
     })
   );
-}
+  }
 
   function sleep(ms: number) {
   return new Promise<void>((res) => setTimeout(res, ms));
-}
+  }
   function chooseVolMode(band: string | undefined, positionOpen: boolean) {
   if (band !== "extreme") return "NORMAL";
   return positionOpen ? "MANAGE_ONLY" : "PAUSE_ENTRIES";
-}
+  }
 
   function makeExchange(): ExchangeAdapter {
   const ex = (process.env.EXCHANGE ?? "paper").toLowerCase();
   return ex === "binance" ? makeBinanceAdapter() : makePaperAdapter();
-}
+  }
 
-type Side = "long" | "short";
+  type Side = "long" | "short";
 
-function toSide(v: unknown): Side {
+  function toSide(v: unknown): Side {
   const s = String(v).toLowerCase();
   return s === "short" ? "short" : "long";
-}
+  }
 
-function toTradeLike(t: any): TradeLike {
+  function toTradeLike(t: any): TradeLike {
   // Ensure side is exactly "long" | "short"
   return { ...t, side: toSide(t.side) };
-}
+  }
 
-function inputBandToString(v: unknown) {
+  function inputBandToString(v: unknown) {
   return typeof v === "string" ? v : String(v ?? "unknown");
-}
+  }
 
-export async function run() { let ticks = 0;
+  export async function run() {
+  
+  console.log("🧪 run() entered");
 
-const calm = createCalmstackV1({ maxTradesPerSession: 2 });
+  let ticks = 0;
 
-const exchangeName = (process.env.EXCHANGE ?? "paper").toLowerCase();
-const mode = ((process.env.EXCHANGE ?? "paper").toLowerCase() as "sim" | "paper" | "live");
-const intel = createIntel({ mode, exchange: exchangeName });
-intel.setBot("running"); 
-intel.setTrade("idle", false);
+  const calm = createCalmstackV1({ maxTradesPerSession: 2 });
 
-let activeSession: SessionId = "OFFSESSION";
-let dayKey = ymdKeyUtcMinus4(nowUtcMinus4());
+  const exchangeName = (process.env.EXCHANGE ?? "paper").toLowerCase();
+  const mode = ((process.env.EXCHANGE ?? "paper").toLowerCase() as "sim" | "paper" | "live");
+  const intel = createIntel({ mode, exchange: exchangeName });
+  intel.setBot("running"); 
+  intel.setTrade("idle", false);
 
-let recoveryTicks = 0;
+  let activeSession: SessionId = "OFFSESSION";
+  let dayKey = ymdKeyUtcMinus4(nowUtcMinus4());
 
-const hb = setInterval(() => {
+  let recoveryTicks = 0;
+
+  const hb = setInterval(() => {
   emit("heartbeat",{
     ticks,
    });
-}, 2000);
+  }, 2000);
 
-const stop = () => {
+  const stop = () => {
   clearInterval(hb);
   emit("runner_stopped");
   process.exit(0);
-};
+  };
 
-process.on("SIGINT", stop);
-process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
 
   const ex = makeExchange();
 
@@ -110,7 +116,7 @@ process.on("SIGTERM", stop);
 
   const scenarios = buildScenarios();
 
-for (const sc of scenarios) {
+  for (const sc of scenarios) {
   console.log("\n==============================");
   console.log("▶ Scenario:", sc.name);
   console.log("==============================");
@@ -124,11 +130,11 @@ for (const sc of scenarios) {
    let prevPrice: number | null = null;
 
   for (const mark of sc.marks)
- {
+  {
   (sc.trade as SimTrade).mark = mark;
   
-// --- VOL FEED (tick-based TR proxy) ---
-const price =
+  // --- VOL FEED (tick-based TR proxy) ---
+  const price =
   typeof mark === "number"
     ? mark
     : Number((mark as any)?.price ?? (mark as any)?.mark ?? (mark as any)?.last ?? 0);
@@ -137,25 +143,25 @@ const price =
   const tr = prevPrice == null ? 0 : Math.abs(price - prevPrice);
   intel.updateVol({ tr, price });  // ✅ ATR + band updates
   prevPrice = price;
-}
+  }
 
-intel.tick();
+  intel.tick();
 
-const tradeAny: any = sc.trade;
-// ---- Session window tracking (UTC−4) ----
-const wall = nowUtcMinus4();
-const nextSession = getSessionId(wall);
+  const tradeAny: any = sc.trade;
+  // ---- Session window tracking (UTC−4) ----
+  const wall = nowUtcMinus4();
+  const nextSession = getSessionId(wall);
 
-// Daily reset marker (we'll use this when we add daily counters)
-const nextDayKey = ymdKeyUtcMinus4(wall);
-if (nextDayKey !== dayKey) {
+  // Daily reset marker (we'll use this when we add daily counters)
+  const nextDayKey = ymdKeyUtcMinus4(wall);
+  if (nextDayKey !== dayKey) {
   dayKey = nextDayKey;
   // later: reset daily counters here
   emit("day_rollover", { dayKey });
-}
+  }
 
-// Session change → reset per-session trade cap
-if (nextSession !== activeSession) {
+  // Session change → reset per-session trade cap
+  if (nextSession !== activeSession) {
   const prev = activeSession;
   activeSession = nextSession;
 
@@ -165,13 +171,13 @@ if (nextSession !== activeSession) {
   }
 
   emit("session_change", { from: prev, to: activeSession });
-}
-const snap = intel.snapshot(tradeAny);
+  }
+  const snap = intel.snapshot(tradeAny);
 
-const band = snap.state.vol.band;              // VolBand
-const positionOpen: boolean = !!snap.state.positionOpen;
+  const band = snap.state.vol.band;              // VolBand
+  const positionOpen: boolean = !!snap.state.positionOpen;
 
-const cs = calm.step({
+  const cs = calm.step({
   band,
   positionOpen,
   mtfOk: true,          // TODO wire real signal
@@ -180,22 +186,22 @@ const cs = calm.step({
   uncertaintyClear: true,
   m15ArmId: null,
   postureOverride: undefined,
-});
+  });
 
-emit("calmstack_v1", cs);
+  emit("calmstack_v1", cs);
 
-const posture = cs.posture;
-emit("posture", { posture, band, positionOpen });
+  const posture = cs.posture;
+  emit("posture", { posture, band, positionOpen });
 
-emit("intel", snap);
+  emit("intel", snap);
 
-if (!sc.trade) {
+  if (!sc.trade) {
   intel.setBot("idle");
   intel.setTrade("idle", false);
   await sleep(150);
   continue;
+  }
 
-}
   intel.setTrade(sc.trade ? "managing" : "idle", !!sc.trade);
 
 
@@ -214,17 +220,17 @@ if (!sc.trade) {
   });
 
   const mtfOk = true;
-const locationOk = true;
-const displacementOk = true;
-const uncertaintyClear = true;
+  const locationOk = true;
+  const displacementOk = true;
+  const uncertaintyClear = true;
 
 
-const gate = entryGateAll({
+  const gate = entryGateAll({
   mtfOk,
   locationOk,
   displacementOk,
   uncertaintyClear,
-});
+  });
 
   emit("gate_eval", {
     allowTrade: gate.allowTrade,
@@ -261,7 +267,7 @@ const gate = entryGateAll({
     stop: snap.trade?.currentStop ?? snap.trade?.initialStop ?? null,
     mark: snap.trade?.mark ?? null,
   },
-});
+  });
 
   if (!gate.allowTrade) {
   emit("paused", { reason: gate.reason, posture, band, positionOpen });
@@ -279,76 +285,75 @@ const gate = entryGateAll({
   intel.setBot("running");
   intel.setTrade("managing", true);
   // DO NOT continue — allow evaluateTradeManagement to run
-}
-if (!cs.allowEntry && !positionOpen) {
+  }
+  if (!cs.allowEntry && !positionOpen) {
   emit("paused", { reason: cs.skipReasons[0] ?? "calmstack blocked", cs });
   intel.setBot("paused");
   intel.setTrade("idle", false);
   await sleep(150);
   continue;
-}
- // skip evaluateTradeManagement + applyTradeManagement
+  }
+  // skip evaluateTradeManagement + applyTradeManagement
 
- // normalize trade shape (strip mark if present)
-const raw: any = sc.trade;
-let trade: TradeLike;
+  // normalize trade shape (strip mark if present)
+  const raw: any = sc.trade;
+  let trade: TradeLike;
 
-if (raw && typeof raw === "object" && "mark" in raw) {
+  if (raw && typeof raw === "object" && "mark" in raw) {
   const { mark: _drop, ...rest } = raw;
   trade = toTradeLike(rest);
-} else {
+  } else {
   trade = toTradeLike(raw);
-}
+  }
 
-// mark is the loop variable
-const result = evaluateTradeManagement(trade, tm, mark, DEFAULT_TM_PARAMS);
-const gatedActions = gateActionsByPosture(posture, result.actions);
+  // mark is the loop variable
+  const result = evaluateTradeManagement(trade, tm, mark, DEFAULT_TM_PARAMS);
+  const gatedActions = gateActionsByPosture(posture, result.actions);
 
-if (band === "extreme") {
+  if (band === "extreme") {
   emit("vol_gate", {
     band,
     posture,
     actionsIn: result.actions.length,
     actionsOut: gatedActions.length,
   });
-}
+  }
 
-if (gatedActions.length > 0) {
+  if (gatedActions.length > 0) {
   const last = gatedActions.at(-1);
 
-if (last) {
-  updateObserverState({
-    lastAction: {
-      type: last.reason ?? "action",
-      reason: last.reason,
-    },
-  });
+  if (last) {
+    updateObserverState({
+      lastAction: {
+        type: last.reason ?? "action",
+        reason: last.reason,
+      },
+    });
+  }
 }
 
 await applyTradeManagement(ex, trade, gatedActions);
-  
-// ---- service mode: keep alive after normal run ----
-if ((process.env.RUN_FOREVER ?? "0") === "1") 
-{}
-   emit("idle", { ts: Date.now(), note: "runner alive; waiting" });
-   // keep process alive
-   // eslint-disable-next-line no-constant-condition
-   while (true) {
-    await sleep(1000);
+} // closes: for (const mark of sc.marks)
+} // closes: for (const sc of scenarios)
+
+
+  // ---- service mode: keep alive after normal run ----
+  if ((process.env.RUN_FOREVER ?? "0") === "1") {
+    emit("idle", { ts: Date.now(), note: "runner alive; waiting" });
+    while (true) {
+      await sleep(1000);
     }
   }
 
- }
-  clearInterval(hb);
- emit("runner_stopped");
- }
+   clearInterval(hb);
+  emit("runner_stopped");
+  } // <- closes run()
 
- console.log("🚀 runner entrypoint reached");
+  console.log("🔥 bottom entrypoint reached");
 
- run()
+run()
   .then(() => console.log("✅ runner finished"))
   .catch((err) => {
     console.error("❌ runner crashed:", err);
     process.exitCode = 1;
   });
-}

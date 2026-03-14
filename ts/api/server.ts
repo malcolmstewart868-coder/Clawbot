@@ -1,4 +1,4 @@
-import { getObserverState, setObserverRunning } from "./observerState";
+import { getObserverState, resetObserverState, setObserverRunning } from "./observerState";
 // ts/api/server.ts
 import express, { type Response } from "express";
 import cors from "cors";
@@ -43,6 +43,8 @@ function startRunner() {
     pushLog("🟡 runner already running");
     return;
   }
+
+  resetObserverState();
 
   runnerProc = spawn("npm", ["run", "runner"],
   {cwd: process.cwd(), // start API from /Clawbot/ts so this points at /ts

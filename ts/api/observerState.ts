@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 export type ObserverState = {
   ts: number;
   engine: {
@@ -34,7 +37,10 @@ export type ObserverState = {
   };
 };
 
-let observerState: ObserverState = {
+const STORAGE_DIR = path.resolve(process.cwd(), "storage");
+const STATE_FILE = path.join(STORAGE_DIR, "observer-state.json");
+
+const defaultState: ObserverState = {
   ts: Date.now(),
   engine: {
     bot: "idle",
@@ -61,44 +67,81 @@ let observerState: ObserverState = {
   },
 };
 
-export function getObserverState() {
-  return observerState;
+function ensureStorage() {
+  if (!fs.existsSync(STORAGE_DIR)) {
+    fs.mkdirSync(STORAGE_DIR, { recursive: true });
+  }
+
+  if (!fs.existsSync(STATE_FILE)) {
+    fs.writeFileSync(STATE_FILE, JSON.stringify(defaultState, null, 2), "utf8");
+  }
 }
 
-export function updateObserverState(
-  patch: Partial<ObserverState>
-) {
-  observerState = {
-    ...observerState,
+function readState(): ObserverState {
+  ensureStorage();
+
+  try {
+    const raw = fs.readFileSync(STATE_FILE, "utf8");
+    return JSON.parse(raw) as ObserverState;
+  } catch {
+    return defaultState;
+  }
+}
+
+function writeState(state: ObserverState) {
+  ensureStorage();
+  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf8");
+}
+
+export function getObserverState(): ObserverState {
+  return readState();
+}
+
+export function updateObserverState(patch: Partial<ObserverState>) {
+  const current = readState();
+
+  const next: ObserverState = {
+    ...current,
     ...patch,
     ts: Date.now(),
     engine: {
-      ...observerState.engine,
+      ...current.engine,
       ...(patch.engine ?? {}),
     },
     calmstack: {
-      ...observerState.calmstack,
+      ...current.calmstack,
       ...(patch.calmstack ?? {}),
     },
     guardrail: {
-      ...observerState.guardrail,
+      ...current.guardrail,
       ...(patch.guardrail ?? {}),
     },
     position: {
-      ...observerState.position,
+      ...current.position,
       ...(patch.position ?? {}),
     },
-    lastAction: patch.lastAction ?? observerState.lastAction,
+    lastAction: patch.lastAction ?? current.lastAction,
   };
+
+  writeState(next);
 }
 
 export function setObserverRunning(running: boolean) {
-  observerState = {
-    ...observerState,
+  const current = readState();
+
+  writeState({
+    ...current,
     ts: Date.now(),
     engine: {
-      ...observerState.engine,
+      ...current.engine,
       running,
     },
-  };
+  });
+}
+
+export function resetObserverState() {
+  writeState({
+    ...defaultState,
+    ts: Date.now(),
+  });
 }
