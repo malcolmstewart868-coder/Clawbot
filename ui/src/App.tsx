@@ -1,271 +1,499 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 
-type StatusPayload = {
-  ok: boolean;
-  running?: boolean;
-  last?: string[];
-  pid?: number | null;
-  autoRestart?: boolean;
+type ObserverState = {
+  ts: number;
+  engine: {
+    bot: string;
+    trade: string;
+    session: string;
+    running: boolean;
+  };
+  calmstack: {
+    posture: string;
+    mode: string;
+    allowEntry: boolean;
+    band: string;
+    tradesTaken: number;
+    skipReasons: string[];
+  };
+  guardrail: {
+    allowTrade: boolean;
+    mode: string;
+    maxTrades: number;
+    remainingTrades: number;
+  };
+  position: {
+    open: boolean;
+    symbol?: string;
+    side?: string;
+    entry?: number;
+    stop?: number | null;
+    mark?: number | null;
+  };
+  lastAction?: {
+    type: string;
+    reason?: string;
+  };
 };
 
-type SseState = "LIVE" | "RELINKING" | "OFF";
-
 export default function App() {
-  const [status, setStatus] = useState<StatusPayload | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [data, setData] = useState<ObserverState | null>(null);
+  const [error, setError] = useState("");
 
-  // Live log lines (SSE)
-  const [liveLines, setLiveLines] = useState<string[]>([]);
-  const [sseState, setSseState] = useState<SseState>("OFF");
-
-  // Auto-scroll behavior
-  const [autoScroll, setAutoScroll] = useState(true);
-  const logBoxRef = useRef<HTMLPreElement | null>(null);
-  const userPausedRef = useRef(false); // true when user scrolls up
-  const lastScrollTopRef = useRef(0);
-
-  const running = !!status?.running;
-
-  async function refresh() {
+  async function load() {
     try {
-      setErr(null);
-      const res = await fetch("/api/status");
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const data = (await res.json()) as StatusPayload;
-      setStatus(data);
-    } catch (e: any) {
-      setErr(e?.message || "failed to load status");
+      const res = await fetch("http://localhost:3001/api/observer");
+      const json = await res.json();
+      setData(json.state);
+      setError("");
+    } catch (err) {
+      console.error(err);
+      setError("Unable to reach Clawbot Observer API on http://localhost:3001");
     }
   }
 
-  async function start() {
-    try {
-      setLoading(true);
-      setErr(null);
-      const res = await fetch("/api/start", { method: "POST" });
-      if (!res.ok) throw new Error(`start ${res.status}`);
-      await refresh();
-    } catch (e: any) {
-      setErr(e?.message || "failed to start");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function stop() {
-    try {
-      setLoading(true);
-      setErr(null);
-      const res = await fetch("/api/stop", { method: "POST" });
-      if (!res.ok) throw new Error(`stop ${res.status}`);
-      await refresh();
-    } catch (e: any) {
-      setErr(e?.message || "failed to stop");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // Keep a small cap so it never grows forever
-  const MAX_LIVE = 500;
-
-  function appendLiveLine(line: string) {
-    setLiveLines((prev) => {
-      const next = [...prev, line];
-      if (next.length > MAX_LIVE) next.splice(0, next.length - MAX_LIVE);
-      return next;
-    });
-  }
-
-  // Detect if user scrolled up → pause auto-scroll until they reach bottom again
-  function handleLogScroll() {
-    const el = logBoxRef.current;
-    if (!el) return;
-
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
-
-    // If user moves away from bottom, pause
-    if (!atBottom) userPausedRef.current = true;
-    // If user returns to bottom, unpause
-    if (atBottom) userPausedRef.current = false;
-
-    lastScrollTopRef.current = el.scrollTop;
-  }
-
-  // Auto-scroll when new lines arrive (only if enabled and not paused by user)
   useEffect(() => {
-    const el = logBoxRef.current;
-    if (!el) return;
-    if (!autoScroll) return;
-    if (userPausedRef.current) return;
-
-    el.scrollTop = el.scrollHeight;
-  }, [liveLines, autoScroll]);
-
-  // Initial status load + gentle polling for status (runner state)
-  useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 2000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    load();
+    const timer = setInterval(load, 1000);
+    return () => clearInterval(timer);
   }, []);
 
-  // SSE hookup with retry loop
-  useEffect(() => {
-    let es: EventSource | null = null;
-    let alive = true;
-    let retryMs = 800;
+  const pnl = useMemo(() => {
+    if (!data?.position.open) return null;
+    const { entry, mark, side } = data.position;
+    if (entry == null || mark == null || !side) return null;
 
-    const open = () => {
-      if (!alive) return;
+    if (side === "long") return mark - entry;
+    if (side === "short") return entry - mark;
+    return null;
+  }, [data]);
 
-      setSseState((prev) => (prev === "LIVE" ? "LIVE" : "RELINKING"));
+  const tradesUsed = useMemo(() => {
+    if (!data) return 0;
+    return Math.max(0, data.guardrail.maxTrades - data.guardrail.remainingTrades);
+  }, [data]);
 
-      try {
-        es = new EventSource("/api/events");
-      } catch (e) {
-        // If browser blocks it for any reason, fall back to retry loop
-        scheduleRetry();
-        return;
-      }
-
-      es.onopen = () => {
-        if (!alive) return;
-        retryMs = 800;
-        setSseState("LIVE");
-      };
-
-      es.onmessage = (ev) => {
-        if (!alive) return;
-        // Server sends: { hello: true } OR { line: "..." }
-        try {
-          const obj = JSON.parse(ev.data || "{}");
-          if (obj?.line) appendLiveLine(String(obj.line));
-        } catch {
-          // ignore
-        }
-      };
-
-      es.onerror = () => {
-        if (!alive) return;
-        setSseState("RELINKING");
-        try {
-          es?.close();
-        } catch {
-          // ignore
-        }
-        es = null;
-        scheduleRetry();
-      };
-    };
-
-    const scheduleRetry = () => {
-      if (!alive) return;
-      setTimeout(() => {
-        if (!alive) return;
-        // backoff up to 6s
-        retryMs = Math.min(Math.floor(retryMs * 1.6), 6000);
-        open();
-      }, retryMs);
-    };
-
-    // start
-    setSseState("RELINKING");
-    open();
-
-    return () => {
-      alive = false;
-      setSseState("OFF");
-      try {
-        es?.close();
-      } catch {
-        // ignore
-      }
-      es = null;
-    };
-  }, []);
-
-  const header = useMemo(() => {
-    const apiLabel = status?.ok ? "Linked" : "Checking...";
-    const runLabel = running ? "RUNNING" : "STOPPED";
-    return `${apiLabel} | Runner: ${runLabel}`;
-  }, [status?.ok, running]);
+  const progressPct = useMemo(() => {
+    if (!data || data.guardrail.maxTrades <= 0) return 0;
+    return (tradesUsed / data.guardrail.maxTrades) * 100;
+  }, [data, tradesUsed]);
 
   return (
-    <div style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980 }}>
-      <h1>🐾 Clawbot Control Panel</h1>
+    <div style={styles.page}>
+      <div style={styles.shell}>
+        <header style={styles.header}>
+          <div>
+            <h1 style={styles.title}>Clawbot Engine Cockpit</h1>
+            <p style={styles.subtitle}>
+              Live observer feed from http://localhost:3001/api/observer
+            </p>
+          </div>
 
-      <p>
-        API: <strong>{status?.ok ? "Linked" : "Checking..."}</strong>
-        {"  |  "}
-        Runner: <strong>{running ? "RUNNING" : "STOPPED"}</strong>
-        {"  |  "}
-        Live logs:{" "}
-        <strong>
-          {sseState === "LIVE" ? "LIVE" : sseState === "RELINKING" ? "RELINKING…" : "OFF"}
-        </strong>
-      </p>
+          <div style={styles.headerRight}>
+            <StatusPill
+              label={data?.engine.running ? "ENGINE LIVE" : "ENGINE OFFLINE"}
+              tone={data?.engine.running ? "green" : "red"}
+            />
+            <StatusPill
+              label={data?.calmstack.mode ?? "UNKNOWN"}
+              tone="blue"
+            />
+          </div>
+        </header>
 
-      {err && (
-        <p style={{ color: "crimson" }}>
-          Error: <strong>{err}</strong>
-        </p>
-      )}
+        {error && <div style={styles.errorBox}>{error}</div>}
 
-      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <button onClick={start} disabled={loading || running}>
-          Start Runner
-        </button>
-        <button onClick={stop} disabled={loading || !running}>
-          Stop Runner
-        </button>
-        <button onClick={refresh} disabled={loading}>
-          Refresh status
-        </button>
+        {!data ? (
+          <div style={styles.connecting}>Connecting to Clawbot…</div>
+        ) : (
+          <>
+            <section style={styles.heroGrid}>
+              <MetricCard
+                title="Bot Status"
+                value={data.engine.bot}
+                tone={data.engine.running ? "green" : "red"}
+                subValue={`Trade: ${data.engine.trade}`}
+              />
+              <MetricCard
+                title="Posture"
+                value={data.calmstack.posture}
+                tone={toneFromPosture(data.calmstack.posture)}
+                subValue={`Mode: ${data.calmstack.mode}`}
+              />
+              <MetricCard
+                title="Volatility Band"
+                value={data.calmstack.band}
+                tone={toneFromBand(data.calmstack.band)}
+                subValue={`Allow Entry: ${yesNo(data.calmstack.allowEntry)}`}
+              />
+              <MetricCard
+                title="Guardrail"
+                value={data.guardrail.allowTrade ? "TRADE ALLOWED" : "BLOCKED"}
+                tone={data.guardrail.allowTrade ? "green" : "red"}
+                subValue={`Mode: ${data.guardrail.mode}`}
+              />
+            </section>
 
-        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <input
-            type="checkbox"
-            checked={autoScroll}
-            onChange={(e) => setAutoScroll(e.target.checked)}
-          />
-          Auto-scroll
-        </label>
+            <section style={styles.mainGrid}>
+              <Card title="Position Summary">
+                <InfoRow label="Open" value={yesNo(data.position.open)} />
+                <InfoRow label="Symbol" value={data.position.symbol ?? "—"} />
+                <InfoRow label="Side" value={data.position.side ?? "—"} />
+                <InfoRow label="Entry" value={fmtNum(data.position.entry)} />
+                <InfoRow label="Stop" value={fmtNum(data.position.stop)} />
+                <InfoRow label="Mark" value={fmtNum(data.position.mark)} />
+                <InfoRow
+                  label="Live P/L"
+                  value={pnl == null ? "—" : fmtSigned(pnl)}
+                  valueTone={pnl == null ? "neutral" : pnl >= 0 ? "green" : "red"}
+                />
+              </Card>
 
-        <button
-          onClick={() => {
-            setLiveLines([]);
-          }}
-        >
-          Clear logs
-        </button>
+              <Card title="Session Guardrails">
+                <InfoRow label="Session" value={data.engine.session} />
+                <InfoRow label="Max Trades" value={String(data.guardrail.maxTrades)} />
+                <InfoRow label="Remaining" value={String(data.guardrail.remainingTrades)} />
+                <InfoRow label="Used" value={String(tradesUsed)} />
+                <div style={{ marginTop: 18 }}>
+                  <div style={styles.progressLabelRow}>
+                    <span style={styles.progressLabel}>Trade Capacity Used</span>
+                    <span style={styles.progressLabel}>{progressPct.toFixed(0)}%</span>
+                  </div>
+                  <div style={styles.progressTrack}>
+                    <div style={{ ...styles.progressFill, width: `${progressPct}%` }} />
+                  </div>
+                </div>
+              </Card>
+
+              <Card title="Last Action">
+                <InfoRow label="Type" value={data.lastAction?.type ?? "none"} />
+                <InfoRow label="Reason" value={data.lastAction?.reason ?? "—"} />
+              </Card>
+
+              <Card title="Engine State">
+                <InfoRow label="Running" value={yesNo(data.engine.running)} />
+                <InfoRow label="Bot" value={data.engine.bot} />
+                <InfoRow label="Trade" value={data.engine.trade} />
+                <InfoRow label="Mode" value={data.calmstack.mode} />
+                <InfoRow label="Posture" value={data.calmstack.posture} />
+                <InfoRow label="Band" value={data.calmstack.band} />
+              </Card>
+
+              <Card title="Skip Reasons">
+                {data.calmstack.skipReasons.length === 0 ? (
+                  <div style={styles.emptyText}>No active skip reasons.</div>
+                ) : (
+                  <ul style={styles.reasonList}>
+                    {data.calmstack.skipReasons.map((reason) => (
+                      <li key={reason} style={styles.reasonItem}>
+                        {reason}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Card>
+
+              <Card title="Raw Snapshot">
+                <pre style={styles.pre}>{JSON.stringify(data, null, 2)}</pre>
+              </Card>
+            </section>
+          </>
+        )}
       </div>
-
-      <h3 style={{ marginTop: 18 }}>Live Logs</h3>
-      <pre
-        ref={logBoxRef}
-        onScroll={handleLogScroll}
-        style={{
-          background: "#111",
-          color: "#eee",
-          padding: 12,
-          borderRadius: 10,
-          minHeight: 220,
-          maxHeight: 360,
-          overflow: "auto",
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word",
-        }}
-        aria-label={header}
-        title={header}
-      >
-        {liveLines.length ? liveLines.join("\n") : "(waiting for log lines…)"}
-      </pre>
-
-      <p style={{ opacity: 0.8, marginTop: 8 }}>
-        Tip: Scroll up to pause auto-scroll. Scroll back to the bottom to resume.
-      </p>
     </div>
   );
 }
+
+function Card({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section style={styles.card}>
+      <h2 style={styles.cardTitle}>{title}</h2>
+      {children}
+    </section>
+  );
+}
+
+function MetricCard({
+  title,
+  value,
+  subValue,
+  tone,
+}: {
+  title: string;
+  value: string;
+  subValue?: string;
+  tone: Tone;
+}) {
+  return (
+    <div style={styles.metricCard}>
+      <div style={styles.metricTitle}>{title}</div>
+      <div style={{ ...styles.metricValue, color: toneColor(tone) }}>{value}</div>
+      {subValue ? <div style={styles.metricSub}>{subValue}</div> : null}
+    </div>
+  );
+}
+
+function InfoRow({
+  label,
+  value,
+  valueTone = "neutral",
+}: {
+  label: string;
+  value: string;
+  valueTone?: Tone | "neutral";
+}) {
+  return (
+    <div style={styles.infoRow}>
+      <span style={styles.infoLabel}>{label}</span>
+      <span
+        style={{
+          ...styles.infoValue,
+          color: valueTone === "neutral" ? "#e5e7eb" : toneColor(valueTone),
+        }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function StatusPill({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: Tone;
+}) {
+  return (
+    <div
+      style={{
+        ...styles.pill,
+        borderColor: toneColor(tone),
+        color: toneColor(tone),
+      }}
+    >
+      {label}
+    </div>
+  );
+}
+
+type Tone = "green" | "red" | "yellow" | "blue";
+
+function toneColor(tone: Tone) {
+  switch (tone) {
+    case "green":
+      return "#22c55e";
+    case "red":
+      return "#ef4444";
+    case "yellow":
+      return "#f59e0b";
+    case "blue":
+      return "#38bdf8";
+  }
+}
+
+function toneFromPosture(posture: string): Tone {
+  const p = posture.toLowerCase();
+  if (p === "aggressive") return "green";
+  if (p === "defensive") return "yellow";
+  return "blue";
+}
+
+function toneFromBand(band: string): Tone {
+  const b = band.toLowerCase();
+  if (b === "extreme") return "red";
+  if (b === "high") return "yellow";
+  if (b === "normal") return "blue";
+  return "green";
+}
+
+function yesNo(v: boolean) {
+  return v ? "YES" : "NO";
+}
+
+function fmtNum(v: number | null | undefined) {
+  if (v == null) return "—";
+  return Number.isInteger(v) ? String(v) : v.toFixed(2);
+}
+
+function fmtSigned(v: number) {
+  return v >= 0 ? `+${v.toFixed(2)}` : v.toFixed(2);
+}
+
+const styles: Record<string, CSSProperties> = {
+  page: {
+    minHeight: "100vh",
+    background:
+      "radial-gradient(circle at top, #0f1b3d 0%, #071226 45%, #030712 100%)",
+    color: "#e5e7eb",
+    fontFamily: "Arial, sans-serif",
+    padding: 24,
+  },
+  shell: {
+    maxWidth: 1400,
+    margin: "0 auto",
+  },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 16,
+    marginBottom: 24,
+    flexWrap: "wrap",
+  },
+  headerRight: {
+    display: "flex",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  title: {
+    margin: 0,
+    fontSize: 56,
+    lineHeight: 1.05,
+    fontWeight: 800,
+    letterSpacing: -1.5,
+  },
+  subtitle: {
+    marginTop: 12,
+    marginBottom: 0,
+    color: "#94a3b8",
+    fontSize: 18,
+  },
+  pill: {
+    padding: "10px 14px",
+    borderRadius: 999,
+    border: "1px solid",
+    fontWeight: 700,
+    fontSize: 13,
+    background: "rgba(15, 23, 42, 0.65)",
+  },
+  errorBox: {
+    padding: 14,
+    borderRadius: 12,
+    background: "#7f1d1d",
+    color: "#fee2e2",
+    marginBottom: 20,
+    fontWeight: 700,
+  },
+  connecting: {
+    padding: 24,
+    borderRadius: 16,
+    background: "#111827",
+    border: "1px solid #1f2937",
+  },
+  heroGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    gap: 16,
+    marginBottom: 20,
+  },
+  metricCard: {
+    background: "rgba(15, 23, 42, 0.88)",
+    border: "1px solid #1e293b",
+    borderRadius: 18,
+    padding: 20,
+    boxShadow: "0 12px 30px rgba(0,0,0,0.22)",
+  },
+  metricTitle: {
+    fontSize: 14,
+    color: "#94a3b8",
+    marginBottom: 10,
+    textTransform: "uppercase",
+    letterSpacing: 1,
+    fontWeight: 700,
+  },
+  metricValue: {
+    fontSize: 28,
+    fontWeight: 800,
+    lineHeight: 1.1,
+    marginBottom: 8,
+  },
+  metricSub: {
+    color: "#cbd5e1",
+    fontSize: 14,
+  },
+  mainGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+    gap: 16,
+  },
+  card: {
+    background: "rgba(15, 23, 42, 0.88)",
+    border: "1px solid #1e293b",
+    borderRadius: 20,
+    padding: 20,
+    boxShadow: "0 12px 30px rgba(0,0,0,0.22)",
+  },
+  cardTitle: {
+    marginTop: 0,
+    marginBottom: 18,
+    fontSize: 20,
+    fontWeight: 800,
+  },
+  infoRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "10px 0",
+    borderBottom: "1px solid rgba(148,163,184,0.12)",
+  },
+  infoLabel: {
+    color: "#94a3b8",
+    fontSize: 14,
+  },
+  infoValue: {
+    fontSize: 15,
+    fontWeight: 700,
+    textAlign: "right",
+  },
+  progressLabelRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    marginBottom: 8,
+    color: "#94a3b8",
+    fontSize: 13,
+    fontWeight: 700,
+  },
+  progressLabel: {
+    color: "#94a3b8",
+  },
+  progressTrack: {
+    width: "100%",
+    height: 12,
+    borderRadius: 999,
+    background: "#0f172a",
+    overflow: "hidden",
+    border: "1px solid #1e293b",
+  },
+  progressFill: {
+    height: "100%",
+    borderRadius: 999,
+    background: "linear-gradient(90deg, #38bdf8 0%, #22c55e 100%)",
+  },
+  emptyText: {
+    color: "#94a3b8",
+    fontSize: 14,
+  },
+  reasonList: {
+    margin: 0,
+    paddingLeft: 18,
+    color: "#e5e7eb",
+  },
+  reasonItem: {
+    marginBottom: 8,
+  },
+  pre: {
+    margin: 0,
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    color: "#cbd5e1",
+    fontSize: 12,
+    lineHeight: 1.5,
+  },
+};
