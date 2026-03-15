@@ -1,0 +1,11 @@
+{
+  "name": "basic-engine-stress",
+  "description": "Rapid observer polling to test stability of calmstack and guardrail layers",
+  "durationSeconds": 60,
+  "pollIntervalMs": 100,
+  "tests": [
+    "observer_load",
+    "guardrail_integrity",
+    "calmstack_posture_shift"
+  ]
+}
