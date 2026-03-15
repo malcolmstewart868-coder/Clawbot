@@ -1,0 +1,32 @@
+{
+  "file": "20260314-211316-basic-engine-stress.jsonl",
+  "generatedAt": 1773537392250,
+  "scenario": "basic-engine-stress",
+  "totals": {
+    "totalEvents": 546,
+    "pauses": 0,
+    "actionsApplied": 0,
+    "gateEvaluations": 0,
+    "calmstackEvaluations": 0,
+    "intelSnapshots": 0,
+    "sessionChanges": 0
+  },
+  "posture": {
+    "seen": [],
+    "shifts": 0
+  },
+  "guardrail": {
+    "allowTradeTrue": 0,
+    "allowTradeFalse": 0,
+    "reasons": {}
+  },
+  "actions": {
+    "byType": {},
+    "byReason": {}
+  },
+  "position": {
+    "openedEvents": 0,
+    "closedEvents": 0
+  },
+  "anomalies": []
+}
