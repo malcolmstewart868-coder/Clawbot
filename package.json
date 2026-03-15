@@ -8,8 +8,12 @@
     "stop": "node scripts/stop-ports.mjs",
     "stress:summary": "ts-node --project ts/tsconfig.json scripts/summarize-blackbox.ts",
 
-     "test": "vitest",
-     "test:run": "vitest run"
+    "intelligence:governed": "ts-node --project ts/tsconfig.json src/intelligence/intelligenceGovernedPipeline.ts",
+
+    "test": "vitest",
+    "test:run": "vitest run"
+
+    
   },
   "devDependencies": {
     "concurrently": "^9.0.0",
