@@ -20,6 +20,7 @@
   import { entryGateAll } from "../core/guardrails/entryGate";
   import type { Posture } from "../core/guardrails/posture";
   import { getSessionId, nowUtcMinus4, ymdKeyUtcMinus4, type SessionId } from "../core/guardrails/sessions";
+  import { BlackBoxRecorder } from "../core/blackbox";
 
   console.log("🔥 TOP-LEVEL runner.ts loaded");
 
@@ -80,6 +81,8 @@
 
   let ticks = 0;
 
+  const blackbox = new BlackBoxRecorder("clawbot-session");
+
   const calm = createCalmstackV1({ maxTradesPerSession: 2 });
 
   const exchangeName = (process.env.EXCHANGE ?? "paper").toLowerCase();
@@ -111,6 +114,17 @@
   const ex = makeExchange();
 
   emit("runner_started", { mode });
+
+  blackbox.record({
+  ts: Date.now(),
+  type: "runner_started",
+  engine: {
+    bot: "running",
+    trade: "idle",
+    running: true,
+  },
+  meta: { mode, exchangeName },
+ });
 
   console.log(`🔧 EXCHANGE=${(process.env.EXCHANGE ?? "paper").toLowerCase()}`);
 
@@ -190,6 +204,21 @@
 
   emit("calmstack_v1", cs);
 
+  blackbox.record({
+  ts: Date.now(),
+  type: "calmstack_eval",
+  session: activeSession,
+  scenario: sc.name,
+  calmstack: {
+    posture: cs.posture,
+    mode: cs.mode,
+    allowEntry: cs.allowEntry,
+    band: String(cs.band ?? band),
+    tradesTaken: cs.tradesTaken,
+    skipReasons: cs.skipReasons ?? [],
+  },
+  });
+
   const posture = cs.posture;
   emit("posture", { posture, band, positionOpen });
 
@@ -238,6 +267,28 @@
     reason: gate.reason,
     posture, band, positionOpen, gate });
 
+    blackbox.record({
+    ts: Date.now(),
+    type: "gate_eval",
+    session: activeSession,
+    scenario: sc.name,
+    guardrail: {
+    allowTrade: gate.allowTrade,
+    mode: cs.guardrail?.mode ?? "unknown",
+    maxTrades: cs.guardrail?.maxTrades ?? 0,
+    remainingTrades: cs.guardrail?.remainingTrades ?? 0,
+    reason: gate.reason,
+    },
+    position: {
+    open: !!snap.state.positionOpen,
+    symbol: snap.trade?.symbol,
+    side: snap.trade?.side,
+    entry: snap.trade?.entry,
+    stop: snap.trade?.currentStop ?? snap.trade?.initialStop ?? null,
+    mark: snap.trade?.mark ?? null,
+    },
+    });
+
     updateObserverState({
   engine: {
     bot: snap.state.bot,
@@ -271,6 +322,29 @@
 
   if (!gate.allowTrade) {
   emit("paused", { reason: gate.reason, posture, band, positionOpen });
+
+    blackbox.record({
+    ts: Date.now(),
+    type: "paused",
+    session: activeSession,
+    scenario: sc.name,
+    engine: {
+    bot: "paused",
+    trade: positionOpen ? "managing" : "idle",
+    running: true,
+    },
+    guardrail: {
+    allowTrade: gate.allowTrade,
+    reason: gate.reason,
+    },
+    calmstack: {
+    posture,
+    mode: cs.mode,
+    allowEntry: cs.allowEntry,
+    band: String(cs.band ?? band),
+    skipReasons: cs.skipReasons ?? [],
+    },
+    });
 
   if (!positionOpen) {
     // ✅ flat: hard stop (no entry attempts)
@@ -333,8 +407,30 @@
 }
 
 await applyTradeManagement(ex, trade, gatedActions);
+const last = gatedActions.at(-1);
+
+    blackbox.record({
+    ts: Date.now(),
+    type: "action_applied",
+    session: activeSession,
+    scenario: sc.name,
+    action: {
+    type: last?.reason ?? "none",
+    reason: last?.reason,
+    },
+    position: {
+    open: !!snap.state.positionOpen,
+    symbol: snap.trade?.symbol,
+    side: snap.trade?.side,
+    entry: snap.trade?.entry,
+    stop: snap.trade?.currentStop ?? snap.trade?.initialStop ?? null,
+    mark: snap.trade?.mark ?? null,
+    },
+    });
+
 } // closes: for (const mark of sc.marks)
 } // closes: for (const sc of scenarios)
+
 
 
   // ---- service mode: keep alive after normal run ----
@@ -346,12 +442,26 @@ await applyTradeManagement(ex, trade, gatedActions);
   }
 
    clearInterval(hb);
-  emit("runner_stopped");
-  } // <- closes run()
 
-  console.log("🔥 bottom entrypoint reached");
+   blackbox.record({
+    ts: Date.now(),
+    type: "runner_stopped",
+    engine: {
+    bot: "idle",
+    trade: "idle",
+    running: false,
+    },
+    meta: {
+    file: blackbox.path(),
+    },
+    });
 
-run()
+    emit("runner_stopped");
+    } // <- closes run()
+
+   console.log("🔥 bottom entrypoint reached");
+
+   run()
   .then(() => console.log("✅ runner finished"))
   .catch((err) => {
     console.error("❌ runner crashed:", err);

@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
+import "./App.css";
+
+const API_BASE = "http://localhost:3001";
 
 type ObserverState = {
   ts: number;
@@ -36,464 +39,438 @@ type ObserverState = {
   };
 };
 
-export default function App() {
-  const [data, setData] = useState<ObserverState | null>(null);
-  const [error, setError] = useState("");
+type StatusResponse = {
+  ok: boolean;
+  running: boolean;
+  last: string[];
+};
 
-  async function load() {
+type ObserverResponse = {
+  ok: boolean;
+  state: ObserverState;
+};
+
+type LogEvent = {
+  ts: number;
+  line: string;
+};
+
+function formatTs(ts?: number) {
+  if (!ts) return "—";
+  return new Date(ts).toLocaleString();
+}
+
+function formatNumber(v?: number | null) {
+  if (v == null || Number.isNaN(v)) return "—";
+  return Number(v).toFixed(2);
+}
+
+function calcPnL(position: ObserverState["position"]) {
+  if (!position.open) return null;
+  if (position.entry == null || position.mark == null) return null;
+
+  const entry = Number(position.entry);
+  const mark = Number(position.mark);
+  if (Number.isNaN(entry) || Number.isNaN(mark)) return null;
+
+  if (position.side === "short") return entry - mark;
+  return mark - entry;
+}
+
+function badgeClass(value: string) {
+  const v = value.toLowerCase();
+
+  if (
+    v.includes("running") ||
+    v.includes("live") ||
+    v.includes("ready") ||
+    v.includes("allowed") ||
+    v.includes("normal")
+  ) {
+    return "badge badge-green";
+  }
+
+  if (
+    v.includes("manage") ||
+    v.includes("high") ||
+    v.includes("prepare")
+  ) {
+    return "badge badge-blue";
+  }
+
+  if (
+    v.includes("pause") ||
+    v.includes("blocked") ||
+    v.includes("defensive") ||
+    v.includes("observe")
+  ) {
+    return "badge badge-amber";
+  }
+
+  return "badge";
+}
+
+export default function App() {
+  const [observer, setObserver] = useState<ObserverState | null>(null);
+  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [logs, setLogs] = useState<LogEvent[]>([]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState<"start" | "stop" | "refresh" | "">("");
+
+  const pnl = useMemo(
+    () => (observer ? calcPnL(observer.position) : null),
+    [observer]
+  );
+
+  async function loadObserver() {
+    const res = await fetch(`${API_BASE}/api/observer`);
+    if (!res.ok) throw new Error("observer fetch failed");
+    const json: ObserverResponse = await res.json();
+    setObserver(json.state);
+  }
+
+  async function loadStatus() {
+    const res = await fetch(`${API_BASE}/api/status`);
+    if (!res.ok) throw new Error("status fetch failed");
+    const json: StatusResponse = await res.json();
+    setStatus(json);
+  }
+
+  async function refreshAll() {
+    setBusy("refresh");
     try {
-      const res = await fetch("http://localhost:3001/api/observer");
-      const json = await res.json();
-      setData(json.state);
+      await Promise.all([loadObserver(), loadStatus()]);
       setError("");
-    } catch (err) {
-      console.error(err);
-      setError("Unable to reach Clawbot Observer API on http://localhost:3001");
+    } catch {
+      setError("Unable to reach Clawbot Observer API");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function postAction(path: "/api/start" | "/api/stop", mode: "start" | "stop") {
+    setBusy(mode);
+    try {
+      const res = await fetch(`${API_BASE}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      if (!res.ok) throw new Error(`${mode} failed`);
+
+      await refreshAll();
+    } catch {
+      setError(`Unable to ${mode} Clawbot engine`);
+    } finally {
+      setBusy("");
     }
   }
 
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 1000);
-    return () => clearInterval(timer);
+    refreshAll();
+
+    const poller = setInterval(() => {
+      Promise.all([loadObserver(), loadStatus()])
+        .then(() => setError(""))
+        .catch(() => setError("Unable to reach Clawbot Observer API"));
+    }, 1500);
+
+    return () => clearInterval(poller);
   }, []);
 
-  const pnl = useMemo(() => {
-    if (!data?.position.open) return null;
-    const { entry, mark, side } = data.position;
-    if (entry == null || mark == null || !side) return null;
+  useEffect(() => {
+    const es = new EventSource(`${API_BASE}/api/events`);
 
-    if (side === "long") return mark - entry;
-    if (side === "short") return entry - mark;
-    return null;
-  }, [data]);
+    es.onmessage = (event) => {
+      try {
+        const parsed = JSON.parse(event.data);
 
-  const tradesUsed = useMemo(() => {
-    if (!data) return 0;
-    return Math.max(0, data.guardrail.maxTrades - data.guardrail.remainingTrades);
-  }, [data]);
+        if (parsed.last && Array.isArray(parsed.last)) {
+          const seeded: LogEvent[] = parsed.last.map((line: string, i: number) => ({
+            ts: Date.now() + i,
+            line,
+          }));
+          setLogs(seeded.slice(-40));
+          return;
+        }
 
-  const progressPct = useMemo(() => {
-    if (!data || data.guardrail.maxTrades <= 0) return 0;
-    return (tradesUsed / data.guardrail.maxTrades) * 100;
-  }, [data, tradesUsed]);
+        if (parsed.line) {
+          setLogs((prev) => [...prev, { ts: parsed.ts ?? Date.now(), line: parsed.line }].slice(-80));
+        }
+      } catch {
+        // ignore malformed SSE payloads
+      }
+    };
+
+    es.onerror = () => {
+      setError("Live event stream disconnected");
+      es.close();
+    };
+
+    return () => {
+      es.close();
+    };
+  }, []);
 
   return (
-    <div style={styles.page}>
-      <div style={styles.shell}>
-        <header style={styles.header}>
-          <div>
-            <h1 style={styles.title}>Clawbot Engine Cockpit</h1>
-            <p style={styles.subtitle}>
-              Live observer feed from http://localhost:3001/api/observer
-            </p>
-          </div>
+    <div className="cockpit">
+      <div className="hero">
+        <h1>Clawbot Engine Cockpit</h1>
+        <p>Live observer feed from {API_BASE}/api/observer</p>
 
-          <div style={styles.headerRight}>
-            <StatusPill
-              label={data?.engine.running ? "ENGINE LIVE" : "ENGINE OFFLINE"}
-              tone={data?.engine.running ? "green" : "red"}
+        <div className="toolbar">
+          <button
+            className="action-btn action-start"
+            onClick={() => postAction("/api/start", "start")}
+            disabled={busy !== ""}
+          >
+            {busy === "start" ? "Starting..." : "Start Engine"}
+          </button>
+
+          <button
+            className="action-btn action-stop"
+            onClick={() => postAction("/api/stop", "stop")}
+            disabled={busy !== ""}
+          >
+            {busy === "stop" ? "Stopping..." : "Stop Engine"}
+          </button>
+
+          <button
+            className="action-btn action-refresh"
+            onClick={refreshAll}
+            disabled={busy !== ""}
+          >
+            {busy === "refresh" ? "Refreshing..." : "Reconnect / Refresh"}
+          </button>
+        </div>
+
+        <div className="status-strip">
+          <span className={badgeClass(observer?.engine.running ? "running" : "stopped")}>
+            {observer?.engine.running ? "ENGINE LIVE" : "ENGINE STOPPED"}
+          </span>
+
+          <span className={badgeClass(observer?.calmstack.mode ?? "unknown")}>
+            {observer?.calmstack.mode ?? "unknown"}
+          </span>
+
+          <span className={badgeClass(observer?.guardrail.allowTrade ? "allowed" : "blocked")}>
+            {observer?.guardrail.allowTrade ? "TRADE ALLOWED" : "TRADE BLOCKED"}
+          </span>
+        </div>
+
+        {error && <div className="alert">{error}</div>}
+      </div>
+
+      {!observer ? (
+        <div className="loading-card">Connecting to Clawbot...</div>
+      ) : (
+        <>
+          <div className="top-grid">
+            <MetricCard
+              title="Bot Status"
+              value={observer.engine.bot}
+              subtitle={`Trade: ${observer.engine.trade}`}
+              tone={observer.engine.running ? "green" : "amber"}
             />
-            <StatusPill
-              label={data?.calmstack.mode ?? "UNKNOWN"}
+            <MetricCard
+              title="Posture"
+              value={observer.calmstack.posture}
+              subtitle={`Mode: ${observer.calmstack.mode}`}
               tone="blue"
             />
+            <MetricCard
+              title="Volatility Band"
+              value={observer.calmstack.band}
+              subtitle={`Allow Entry: ${observer.calmstack.allowEntry ? "YES" : "NO"}`}
+              tone={observer.calmstack.allowEntry ? "amber" : "red"}
+            />
+            <MetricCard
+              title="Guardrail"
+              value={observer.guardrail.allowTrade ? "TRADE ALLOWED" : "BLOCKED"}
+              subtitle={`Mode: ${observer.guardrail.mode}`}
+              tone={observer.guardrail.allowTrade ? "green" : "red"}
+            />
           </div>
-        </header>
 
-        {error && <div style={styles.errorBox}>{error}</div>}
-
-        {!data ? (
-          <div style={styles.connecting}>Connecting to Clawbot…</div>
-        ) : (
-          <>
-            <section style={styles.heroGrid}>
-              <MetricCard
-                title="Bot Status"
-                value={data.engine.bot}
-                tone={data.engine.running ? "green" : "red"}
-                subValue={`Trade: ${data.engine.trade}`}
+          <div className="main-grid">
+            <DataCard title="Position Summary">
+              <DataRow label="Open" value={observer.position.open ? "YES" : "NO"} />
+              <DataRow label="Symbol" value={observer.position.symbol ?? "—"} />
+              <DataRow label="Side" value={observer.position.side ?? "—"} />
+              <DataRow label="Entry" value={formatNumber(observer.position.entry)} />
+              <DataRow label="Stop" value={formatNumber(observer.position.stop)} />
+              <DataRow label="Mark" value={formatNumber(observer.position.mark)} />
+              <DataRow
+                label="Live P/L"
+                value={pnl == null ? "—" : `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`}
+                valueClass={pnl == null ? "" : pnl >= 0 ? "value-green" : "value-red"}
               />
-              <MetricCard
-                title="Posture"
-                value={data.calmstack.posture}
-                tone={toneFromPosture(data.calmstack.posture)}
-                subValue={`Mode: ${data.calmstack.mode}`}
+            </DataCard>
+
+            <DataCard title="Session Guardrails">
+              <DataRow label="Session" value={observer.engine.session} />
+              <DataRow label="Max Trades" value={String(observer.guardrail.maxTrades)} />
+              <DataRow
+                label="Remaining"
+                value={String(observer.guardrail.remainingTrades)}
               />
-              <MetricCard
-                title="Volatility Band"
-                value={data.calmstack.band}
-                tone={toneFromBand(data.calmstack.band)}
-                subValue={`Allow Entry: ${yesNo(data.calmstack.allowEntry)}`}
-              />
-              <MetricCard
-                title="Guardrail"
-                value={data.guardrail.allowTrade ? "TRADE ALLOWED" : "BLOCKED"}
-                tone={data.guardrail.allowTrade ? "green" : "red"}
-                subValue={`Mode: ${data.guardrail.mode}`}
-              />
-            </section>
-
-            <section style={styles.mainGrid}>
-              <Card title="Position Summary">
-                <InfoRow label="Open" value={yesNo(data.position.open)} />
-                <InfoRow label="Symbol" value={data.position.symbol ?? "—"} />
-                <InfoRow label="Side" value={data.position.side ?? "—"} />
-                <InfoRow label="Entry" value={fmtNum(data.position.entry)} />
-                <InfoRow label="Stop" value={fmtNum(data.position.stop)} />
-                <InfoRow label="Mark" value={fmtNum(data.position.mark)} />
-                <InfoRow
-                  label="Live P/L"
-                  value={pnl == null ? "—" : fmtSigned(pnl)}
-                  valueTone={pnl == null ? "neutral" : pnl >= 0 ? "green" : "red"}
-                />
-              </Card>
-
-              <Card title="Session Guardrails">
-                <InfoRow label="Session" value={data.engine.session} />
-                <InfoRow label="Max Trades" value={String(data.guardrail.maxTrades)} />
-                <InfoRow label="Remaining" value={String(data.guardrail.remainingTrades)} />
-                <InfoRow label="Used" value={String(tradesUsed)} />
-                <div style={{ marginTop: 18 }}>
-                  <div style={styles.progressLabelRow}>
-                    <span style={styles.progressLabel}>Trade Capacity Used</span>
-                    <span style={styles.progressLabel}>{progressPct.toFixed(0)}%</span>
-                  </div>
-                  <div style={styles.progressTrack}>
-                    <div style={{ ...styles.progressFill, width: `${progressPct}%` }} />
-                  </div>
-                </div>
-              </Card>
-
-              <Card title="Last Action">
-                <InfoRow label="Type" value={data.lastAction?.type ?? "none"} />
-                <InfoRow label="Reason" value={data.lastAction?.reason ?? "—"} />
-              </Card>
-
-              <Card title="Engine State">
-                <InfoRow label="Running" value={yesNo(data.engine.running)} />
-                <InfoRow label="Bot" value={data.engine.bot} />
-                <InfoRow label="Trade" value={data.engine.trade} />
-                <InfoRow label="Mode" value={data.calmstack.mode} />
-                <InfoRow label="Posture" value={data.calmstack.posture} />
-                <InfoRow label="Band" value={data.calmstack.band} />
-              </Card>
-
-              <Card title="Skip Reasons">
-                {data.calmstack.skipReasons.length === 0 ? (
-                  <div style={styles.emptyText}>No active skip reasons.</div>
-                ) : (
-                  <ul style={styles.reasonList}>
-                    {data.calmstack.skipReasons.map((reason) => (
-                      <li key={reason} style={styles.reasonItem}>
-                        {reason}
-                      </li>
-                    ))}
-                  </ul>
+              <DataRow
+                label="Used"
+                value={String(
+                  Math.max(
+                    0,
+                    observer.guardrail.maxTrades - observer.guardrail.remainingTrades
+                  )
                 )}
-              </Card>
+              />
 
-              <Card title="Raw Snapshot">
-                <pre style={styles.pre}>{JSON.stringify(data, null, 2)}</pre>
-              </Card>
-            </section>
-          </>
-        )}
-      </div>
+              <div className="progress-wrap">
+                <div className="progress-label">
+                  <span>Trade Capacity Used</span>
+                  <span>
+                    {observer.guardrail.maxTrades > 0
+                      ? `${Math.round(
+                          ((observer.guardrail.maxTrades -
+                            observer.guardrail.remainingTrades) /
+                            observer.guardrail.maxTrades) *
+                            100
+                        )}%`
+                      : "0%"}
+                  </span>
+                </div>
+
+                <div className="progress-bar">
+                  <div
+                    className="progress-fill"
+                    style={{
+                      width:
+                        observer.guardrail.maxTrades > 0
+                          ? `${Math.max(
+                              0,
+                              Math.min(
+                                100,
+                                ((observer.guardrail.maxTrades -
+                                  observer.guardrail.remainingTrades) /
+                                  observer.guardrail.maxTrades) *
+                                  100
+                              )
+                            )}%`
+                          : "0%",
+                    }}
+                  />
+                </div>
+              </div>
+            </DataCard>
+
+            <DataCard title="Last Action">
+              <DataRow label="Type" value={observer.lastAction?.type ?? "none"} />
+              <DataRow label="Reason" value={observer.lastAction?.reason ?? "—"} />
+            </DataCard>
+
+            <DataCard title="Engine State">
+              <DataRow label="Running" value={observer.engine.running ? "YES" : "NO"} />
+              <DataRow label="Bot" value={observer.engine.bot} />
+              <DataRow label="Trade" value={observer.engine.trade} />
+              <DataRow label="Mode" value={observer.calmstack.mode} />
+              <DataRow label="Posture" value={observer.calmstack.posture} />
+              <DataRow label="Band" value={observer.calmstack.band} />
+            </DataCard>
+
+            <DataCard title="Skip Reasons">
+              {observer.calmstack.skipReasons.length === 0 ? (
+                <div className="empty-note">No active skip reasons.</div>
+              ) : (
+                <ul className="skip-list">
+                  {observer.calmstack.skipReasons.map((reason, idx) => (
+                    <li key={`${reason}-${idx}`}>{reason}</li>
+                  ))}
+                </ul>
+              )}
+            </DataCard>
+
+            <DataCard title="Raw Snapshot">
+              <pre className="raw-block">{JSON.stringify(observer, null, 2)}</pre>
+            </DataCard>
+          </div>
+
+          <div className="log-card">
+            <div className="log-header">
+              <h2>Event Stream</h2>
+              <span className="muted">
+                Last update: {formatTs(observer.ts)}
+              </span>
+            </div>
+
+            <div className="log-body">
+              {logs.length === 0 ? (
+                <div className="empty-note">Waiting for engine events...</div>
+              ) : (
+                logs
+                  .slice()
+                  .reverse()
+                  .map((log) => (
+                    <div key={`${log.ts}-${log.line}`} className="log-line">
+                      <span className="log-ts">{formatTs(log.ts)}</span>
+                      <span className="log-text">{log.line}</span>
+                    </div>
+                  ))
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
-  );
-}
-
-function Card({
-  title,
-  children,
-}: {
-  title: string;
-  children: ReactNode;
-}) {
-  return (
-    <section style={styles.card}>
-      <h2 style={styles.cardTitle}>{title}</h2>
-      {children}
-    </section>
   );
 }
 
 function MetricCard({
   title,
   value,
-  subValue,
+  subtitle,
   tone,
 }: {
   title: string;
   value: string;
-  subValue?: string;
-  tone: Tone;
+  subtitle: string;
+  tone: "green" | "blue" | "amber" | "red";
 }) {
   return (
-    <div style={styles.metricCard}>
-      <div style={styles.metricTitle}>{title}</div>
-      <div style={{ ...styles.metricValue, color: toneColor(tone) }}>{value}</div>
-      {subValue ? <div style={styles.metricSub}>{subValue}</div> : null}
+    <div className="metric-card">
+      <div className="metric-title">{title}</div>
+      <div className={`metric-value metric-${tone}`}>{value}</div>
+      <div className="metric-subtitle">{subtitle}</div>
     </div>
   );
 }
 
-function InfoRow({
+function DataCard({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="data-card">
+      <h2>{title}</h2>
+      {children}
+    </div>
+  );
+}
+
+function DataRow({
   label,
   value,
-  valueTone = "neutral",
+  valueClass = "",
 }: {
   label: string;
   value: string;
-  valueTone?: Tone | "neutral";
+  valueClass?: string;
 }) {
   return (
-    <div style={styles.infoRow}>
-      <span style={styles.infoLabel}>{label}</span>
-      <span
-        style={{
-          ...styles.infoValue,
-          color: valueTone === "neutral" ? "#e5e7eb" : toneColor(valueTone),
-        }}
-      >
-        {value}
-      </span>
+    <div className="data-row">
+      <span className="data-label">{label}</span>
+      <span className={`data-value ${valueClass}`.trim()}>{value}</span>
     </div>
   );
 }
-
-function StatusPill({
-  label,
-  tone,
-}: {
-  label: string;
-  tone: Tone;
-}) {
-  return (
-    <div
-      style={{
-        ...styles.pill,
-        borderColor: toneColor(tone),
-        color: toneColor(tone),
-      }}
-    >
-      {label}
-    </div>
-  );
-}
-
-type Tone = "green" | "red" | "yellow" | "blue";
-
-function toneColor(tone: Tone) {
-  switch (tone) {
-    case "green":
-      return "#22c55e";
-    case "red":
-      return "#ef4444";
-    case "yellow":
-      return "#f59e0b";
-    case "blue":
-      return "#38bdf8";
-  }
-}
-
-function toneFromPosture(posture: string): Tone {
-  const p = posture.toLowerCase();
-  if (p === "aggressive") return "green";
-  if (p === "defensive") return "yellow";
-  return "blue";
-}
-
-function toneFromBand(band: string): Tone {
-  const b = band.toLowerCase();
-  if (b === "extreme") return "red";
-  if (b === "high") return "yellow";
-  if (b === "normal") return "blue";
-  return "green";
-}
-
-function yesNo(v: boolean) {
-  return v ? "YES" : "NO";
-}
-
-function fmtNum(v: number | null | undefined) {
-  if (v == null) return "—";
-  return Number.isInteger(v) ? String(v) : v.toFixed(2);
-}
-
-function fmtSigned(v: number) {
-  return v >= 0 ? `+${v.toFixed(2)}` : v.toFixed(2);
-}
-
-const styles: Record<string, CSSProperties> = {
-  page: {
-    minHeight: "100vh",
-    background:
-      "radial-gradient(circle at top, #0f1b3d 0%, #071226 45%, #030712 100%)",
-    color: "#e5e7eb",
-    fontFamily: "Arial, sans-serif",
-    padding: 24,
-  },
-  shell: {
-    maxWidth: 1400,
-    margin: "0 auto",
-  },
-  header: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    gap: 16,
-    marginBottom: 24,
-    flexWrap: "wrap",
-  },
-  headerRight: {
-    display: "flex",
-    gap: 12,
-    flexWrap: "wrap",
-  },
-  title: {
-    margin: 0,
-    fontSize: 56,
-    lineHeight: 1.05,
-    fontWeight: 800,
-    letterSpacing: -1.5,
-  },
-  subtitle: {
-    marginTop: 12,
-    marginBottom: 0,
-    color: "#94a3b8",
-    fontSize: 18,
-  },
-  pill: {
-    padding: "10px 14px",
-    borderRadius: 999,
-    border: "1px solid",
-    fontWeight: 700,
-    fontSize: 13,
-    background: "rgba(15, 23, 42, 0.65)",
-  },
-  errorBox: {
-    padding: 14,
-    borderRadius: 12,
-    background: "#7f1d1d",
-    color: "#fee2e2",
-    marginBottom: 20,
-    fontWeight: 700,
-  },
-  connecting: {
-    padding: 24,
-    borderRadius: 16,
-    background: "#111827",
-    border: "1px solid #1f2937",
-  },
-  heroGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-    gap: 16,
-    marginBottom: 20,
-  },
-  metricCard: {
-    background: "rgba(15, 23, 42, 0.88)",
-    border: "1px solid #1e293b",
-    borderRadius: 18,
-    padding: 20,
-    boxShadow: "0 12px 30px rgba(0,0,0,0.22)",
-  },
-  metricTitle: {
-    fontSize: 14,
-    color: "#94a3b8",
-    marginBottom: 10,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-    fontWeight: 700,
-  },
-  metricValue: {
-    fontSize: 28,
-    fontWeight: 800,
-    lineHeight: 1.1,
-    marginBottom: 8,
-  },
-  metricSub: {
-    color: "#cbd5e1",
-    fontSize: 14,
-  },
-  mainGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-    gap: 16,
-  },
-  card: {
-    background: "rgba(15, 23, 42, 0.88)",
-    border: "1px solid #1e293b",
-    borderRadius: 20,
-    padding: 20,
-    boxShadow: "0 12px 30px rgba(0,0,0,0.22)",
-  },
-  cardTitle: {
-    marginTop: 0,
-    marginBottom: 18,
-    fontSize: 20,
-    fontWeight: 800,
-  },
-  infoRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 12,
-    padding: "10px 0",
-    borderBottom: "1px solid rgba(148,163,184,0.12)",
-  },
-  infoLabel: {
-    color: "#94a3b8",
-    fontSize: 14,
-  },
-  infoValue: {
-    fontSize: 15,
-    fontWeight: 700,
-    textAlign: "right",
-  },
-  progressLabelRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    marginBottom: 8,
-    color: "#94a3b8",
-    fontSize: 13,
-    fontWeight: 700,
-  },
-  progressLabel: {
-    color: "#94a3b8",
-  },
-  progressTrack: {
-    width: "100%",
-    height: 12,
-    borderRadius: 999,
-    background: "#0f172a",
-    overflow: "hidden",
-    border: "1px solid #1e293b",
-  },
-  progressFill: {
-    height: "100%",
-    borderRadius: 999,
-    background: "linear-gradient(90deg, #38bdf8 0%, #22c55e 100%)",
-  },
-  emptyText: {
-    color: "#94a3b8",
-    fontSize: 14,
-  },
-  reasonList: {
-    margin: 0,
-    paddingLeft: 18,
-    color: "#e5e7eb",
-  },
-  reasonItem: {
-    marginBottom: 8,
-  },
-  pre: {
-    margin: 0,
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-    color: "#cbd5e1",
-    fontSize: 12,
-    lineHeight: 1.5,
-  },
-};
