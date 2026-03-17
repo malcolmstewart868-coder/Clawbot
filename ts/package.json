@@ -9,6 +9,7 @@
     "runner": "ts-node --project tsconfig.json app/runner.ts",
     "api": "ts-node --project tsconfig.json api/server.ts",
     "dev": "ts-node --project tsconfig.json app/runner.ts",
+    "night": "ts-node --project ts/tsconfig.json ts/scripts/run-night-cycle.ts",
     "loop": "npm run bot",
     "typecheck": "tsc --noEmit",
     "test": "echo \"Error: no test specified\" && exit 1"

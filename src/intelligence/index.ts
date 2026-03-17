@@ -15,3 +15,4 @@ export * from "./intelligenceMode";
 export * from "./intelligenceGovernedPipeline";
 export * from "./volatilityDetector";
 export * from "./reentryStabilizer";
+export * from "./volatilityAuthorityController";
