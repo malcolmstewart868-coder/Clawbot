@@ -4,7 +4,7 @@
   "scripts": {
     "boot": "concurrently -n API,UI -c auto \"npm run api\" \"npm run ui\"",
     "api": "npm run dev --prefix ts",
-    "ui": "npm run dev --prefix ui",
+    "ui": "npm run dev --prefix ui -- --host",
     "stop": "node scripts/stop-ports.mjs",
     "night": "ts-node --project ts/tsconfig.json ts/scripts/run-night-cycle.ts",
     "stress:summary": "ts-node --project ts/tsconfig.json scripts/summarize-blackbox.ts",

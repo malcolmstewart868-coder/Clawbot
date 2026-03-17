@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 
-const API_BASE = "http://localhost:3001";
+const API_BASE = "http://192.168.0.8:3001";
 
 type ObserverState = {
   ts: number;

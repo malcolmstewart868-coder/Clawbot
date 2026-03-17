@@ -14,7 +14,7 @@ type ObserverResponse = {
   state?: unknown;
 };
 
-const OBSERVER_URL = "http://localhost:3001/api/observer";
+const OBSERVER_URL = "http://192.168.0.8:3001/api/observer";
 const EVENTS_DIR = path.join(process.cwd(), "stress", "blackbox", "events");
 
 function sleep(ms: number) {
