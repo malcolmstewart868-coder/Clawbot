@@ -1,15 +1,15 @@
 {
-  "intelligenceMode": "SHADOW",
-  "authorityState": "SHADOW",
-  "authorityStableCycles": 0,
-  "authorityUnstableCycles": 10,
-  "authorityTransitioned": false,
-  "volatilityState": "ELEVATED",
-  "volatilityScore": 6.76,
+  "intelligenceMode": "ADVISORY",
+  "authorityState": "SCOUT",
+  "authorityStableCycles": 1,
+  "authorityUnstableCycles": 0,
+  "authorityTransitioned": true,
+  "volatilityState": "NORMAL",
+  "volatilityScore": 3.28,
   "supervisorAuthorityGranted": false,
-  "supervisorObserveOnly": true,
-  "supervisorAdvisoryOnly": false,
-  "supervisorNote": "Intelligence is running in SHADOW mode; downstream influence is disabled.",
+  "supervisorObserveOnly": false,
+  "supervisorAdvisoryOnly": true,
+  "supervisorNote": "Intelligence is running in ADVISORY mode; downstream output is non-binding.",
   "recommendedAction": "OBSERVE",
-  "timestampUtc": "2026-03-17T19:57:56.223Z"
+  "timestampUtc": "2026-03-17T19:58:56.316Z"
 }

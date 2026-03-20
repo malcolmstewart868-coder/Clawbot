@@ -1,12 +1,22 @@
 import { getObserverState, resetObserverState, setObserverRunning } from "./observerState";
 // ts/api/server.ts
+
 import express, { type Response } from "express";
 import cors from "cors";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  getLatestIntelligenceTelemetry as getStoredTelemetry,
+  getAuthorityTimeline,
+} from "../../src/shared/telemetry/intelligenceTelemetryStore";
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+  const app = express();
+    app.use(
+    cors({
+    origin: "*",
+    methods: ["GET", "POST"],
+     })
+     );
+    app.use(express.json());
 
 const PORT = Number(process.env.API_PORT ?? 3001);
 
@@ -91,18 +101,35 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, name: "clawbot-api" });
 });
 
-app.get("/api/status", (_req, res) => {
-  res.json({
-    ok: true,
-    running: isRunning(),
-    last: logBuf.slice(-50),
-  });
-});
-
 app.get("/api/observer", (_req, res) => {
+  const state = getObserverState();
+  const telemetry = getStoredTelemetry();
+  const authorityTimeline = getAuthorityTimeline();
+
   res.json({
     ok: true,
-    state: getObserverState(),
+    state: {
+      ...state,
+      intelligenceMode: telemetry?.mode ?? "SHADOW",
+      supervisor: telemetry
+        ? {
+            mode: telemetry.mode,
+            authorityGranted: telemetry.authorityGranted,
+            observeOnly: telemetry.observeOnly,
+            advisoryOnly: telemetry.advisoryOnly,
+            supervisorNote: telemetry.supervisorNote,
+            timestampUtc: telemetry.timestampUtc,
+          }
+        : {
+            mode: "SHADOW",
+            authorityGranted: false,
+            observeOnly: true,
+            advisoryOnly: false,
+            supervisorNote: "No telemetry yet.",
+            timestampUtc: new Date().toISOString(),
+          },
+      authorityTimeline,
+    },
   });
 });
 
@@ -138,3 +165,7 @@ app.listen(PORT, () => {
   console.log(`🟢 API listening on http://localhost:${PORT}`);
   pushLog(`🟢 API listening on http://localhost:${PORT}`);
 });
+function getLatestIntelligenceTelemetry() {
+  throw new Error("Function not implemented.");
+}
+

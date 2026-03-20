@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
+import AuthorityPanel from "./components/AuthorityPanel";
+import AuthorityTimeline from "./components/AuthorityTimeline";
 
-const API_BASE = "http://192.168.0.8:3001";
+const API_BASE = "http://localhost:3001";
 
 type ObserverState = {
   ts: number;
@@ -37,6 +39,22 @@ type ObserverState = {
     type: string;
     reason?: string;
   };
+  
+  intelligenceMode?: string;
+  supervisor?: {
+    mode: string;
+    authorityGranted: boolean;
+    observeOnly: boolean;
+    advisoryOnly: boolean;
+    supervisorNote: string;
+    timestampUtc: string;
+  };
+  authorityTimeline?: Array<{
+    ts: number;
+    from: string;
+    to: string;
+    reason: string;
+  }>;
 };
 
 type StatusResponse = {
@@ -90,11 +108,7 @@ function badgeClass(value: string) {
     return "badge badge-green";
   }
 
-  if (
-    v.includes("manage") ||
-    v.includes("high") ||
-    v.includes("prepare")
-  ) {
+  if (v.includes("manage") || v.includes("high") || v.includes("prepare")) {
     return "badge badge-blue";
   }
 
@@ -112,7 +126,7 @@ function badgeClass(value: string) {
 
 export default function App() {
   const [observer, setObserver] = useState<ObserverState | null>(null);
-  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [, setStatus] = useState<StatusResponse | null>(null);
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<"start" | "stop" | "refresh" | "">("");
@@ -129,17 +143,10 @@ export default function App() {
     setObserver(json.state);
   }
 
-  async function loadStatus() {
-    const res = await fetch(`${API_BASE}/api/status`);
-    if (!res.ok) throw new Error("status fetch failed");
-    const json: StatusResponse = await res.json();
-    setStatus(json);
-  }
-
-  async function refreshAll() {
+    async function refreshAll() {
     setBusy("refresh");
     try {
-      await Promise.all([loadObserver(), loadStatus()]);
+      await loadObserver();
       setError("");
     } catch {
       setError("Unable to reach Clawbot Observer API");
@@ -148,7 +155,10 @@ export default function App() {
     }
   }
 
-  async function postAction(path: "/api/start" | "/api/stop", mode: "start" | "stop") {
+  async function postAction(
+    path: "/api/start" | "/api/stop",
+    mode: "start" | "stop"
+  ) {
     setBusy(mode);
     try {
       const res = await fetch(`${API_BASE}${path}`, {
@@ -170,10 +180,10 @@ export default function App() {
     refreshAll();
 
     const poller = setInterval(() => {
-      Promise.all([loadObserver(), loadStatus()])
+      loadObserver()
         .then(() => setError(""))
         .catch(() => setError("Unable to reach Clawbot Observer API"));
-    }, 1500);
+       }, 1500);
 
     return () => clearInterval(poller);
   }, []);
@@ -186,16 +196,22 @@ export default function App() {
         const parsed = JSON.parse(event.data);
 
         if (parsed.last && Array.isArray(parsed.last)) {
-          const seeded: LogEvent[] = parsed.last.map((line: string, i: number) => ({
-            ts: Date.now() + i,
-            line,
-          }));
+          const seeded: LogEvent[] = parsed.last.map(
+            (line: string, i: number) => ({
+              ts: Date.now() + i,
+              line,
+            })
+          );
           setLogs(seeded.slice(-40));
           return;
         }
 
         if (parsed.line) {
-          setLogs((prev) => [...prev, { ts: parsed.ts ?? Date.now(), line: parsed.line }].slice(-80));
+          setLogs((prev) =>
+            [...prev, { ts: parsed.ts ?? Date.now(), line: parsed.line }].slice(
+              -80
+            )
+          );
         }
       } catch {
         // ignore malformed SSE payloads
@@ -245,7 +261,11 @@ export default function App() {
         </div>
 
         <div className="status-strip">
-          <span className={badgeClass(observer?.engine.running ? "running" : "stopped")}>
+          <span
+            className={badgeClass(
+              observer?.engine.running ? "running" : "stopped"
+            )}
+          >
             {observer?.engine.running ? "ENGINE LIVE" : "ENGINE STOPPED"}
           </span>
 
@@ -253,7 +273,11 @@ export default function App() {
             {observer?.calmstack.mode ?? "unknown"}
           </span>
 
-          <span className={badgeClass(observer?.guardrail.allowTrade ? "allowed" : "blocked")}>
+          <span
+            className={badgeClass(
+              observer?.guardrail.allowTrade ? "allowed" : "blocked"
+            )}
+          >
             {observer?.guardrail.allowTrade ? "TRADE ALLOWED" : "TRADE BLOCKED"}
           </span>
         </div>
@@ -281,7 +305,9 @@ export default function App() {
             <MetricCard
               title="Volatility Band"
               value={observer.calmstack.band}
-              subtitle={`Allow Entry: ${observer.calmstack.allowEntry ? "YES" : "NO"}`}
+              subtitle={`Allow Entry: ${
+                observer.calmstack.allowEntry ? "YES" : "NO"
+              }`}
               tone={observer.calmstack.allowEntry ? "amber" : "red"}
             />
             <MetricCard
@@ -293,23 +319,61 @@ export default function App() {
           </div>
 
           <div className="main-grid">
+            <AuthorityPanel observer={observer} />
+<AuthorityTimeline
+  timeline={
+    observer.authorityTimeline ?? [
+      {
+        ts: Date.now() - 60000,
+        from: "SHADOW",
+        to: "SCOUT",
+        reason: "normal volatility confirmed",
+      },
+      {
+        ts: Date.now() - 30000,
+        from: "SCOUT",
+        to: "SHADOW",
+        reason: "elevated volatility hold",
+      },
+    ]
+  }
+/>
             <DataCard title="Position Summary">
-              <DataRow label="Open" value={observer.position.open ? "YES" : "NO"} />
+              <DataRow
+                label="Open"
+                value={observer.position.open ? "YES" : "NO"}
+              />
               <DataRow label="Symbol" value={observer.position.symbol ?? "—"} />
               <DataRow label="Side" value={observer.position.side ?? "—"} />
-              <DataRow label="Entry" value={formatNumber(observer.position.entry)} />
-              <DataRow label="Stop" value={formatNumber(observer.position.stop)} />
-              <DataRow label="Mark" value={formatNumber(observer.position.mark)} />
+              <DataRow
+                label="Entry"
+                value={formatNumber(observer.position.entry)}
+              />
+              <DataRow
+                label="Stop"
+                value={formatNumber(observer.position.stop)}
+              />
+              <DataRow
+                label="Mark"
+                value={formatNumber(observer.position.mark)}
+              />
               <DataRow
                 label="Live P/L"
-                value={pnl == null ? "—" : `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`}
-                valueClass={pnl == null ? "" : pnl >= 0 ? "value-green" : "value-red"}
+                value={
+                  pnl == null ? "—" : `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`
+                }
+                valueClass={
+                  pnl == null ? "" : pnl >= 0 ? "value-green" : "value-red"
+                }
               />
             </DataCard>
 
             <DataCard title="Session Guardrails">
               <DataRow label="Session" value={observer.engine.session} />
-              <DataRow label="Max Trades" value={String(observer.guardrail.maxTrades)} />
+              <DataRow
+                label="Max Trades"
+                value={String(observer.guardrail.maxTrades)}
+              />
               <DataRow
                 label="Remaining"
                 value={String(observer.guardrail.remainingTrades)}
@@ -319,12 +383,13 @@ export default function App() {
                 value={String(
                   Math.max(
                     0,
-                    observer.guardrail.maxTrades - observer.guardrail.remainingTrades
+                    observer.guardrail.maxTrades -
+                      observer.guardrail.remainingTrades
                   )
                 )}
-              />
-
-              <div className="progress-wrap">
+               />
+               
+               <div className="progress-wrap">
                 <div className="progress-label">
                   <span>Trade Capacity Used</span>
                   <span>
@@ -340,35 +405,46 @@ export default function App() {
                 </div>
 
                 <div className="progress-bar">
-                  <div
-                    className="progress-fill"
-                    style={{
-                      width:
-                        observer.guardrail.maxTrades > 0
-                          ? `${Math.max(
-                              0,
-                              Math.min(
+                <div
+                className="progress-fill"
+                style={
+                    {
+                     "--fill-width":
+                     observer.guardrail.maxTrades > 0
+                       ? `${Math.max(
+                         0,
+                             Math.min(
                                 100,
-                                ((observer.guardrail.maxTrades -
-                                  observer.guardrail.remainingTrades) /
-                                  observer.guardrail.maxTrades) *
-                                  100
-                              )
-                            )}%`
-                          : "0%",
-                    }}
-                  />
-                </div>
-              </div>
-            </DataCard>
+                                 ((observer.guardrail.maxTrades -
+                                   observer.guardrail.remainingTrades) /
+                                     observer.guardrail.maxTrades) *
+                                      100
+                                       )
+                                          )}%`
+                                            : "0%",
+                                           } as React.CSSProperties
+                                           }
+                                         />
+                                        </div>
+                                       </div>
+                                  </DataCard>
 
-            <DataCard title="Last Action">
-              <DataRow label="Type" value={observer.lastAction?.type ?? "none"} />
-              <DataRow label="Reason" value={observer.lastAction?.reason ?? "—"} />
+                 <DataCard title="Last Action">
+                 <DataRow
+                 label="Type"
+                 value={observer.lastAction?.type ?? "none"}
+                  />
+                  <DataRow
+                  label="Reason"
+                value={observer.lastAction?.reason ?? "—"}
+              />
             </DataCard>
 
             <DataCard title="Engine State">
-              <DataRow label="Running" value={observer.engine.running ? "YES" : "NO"} />
+              <DataRow
+                label="Running"
+                value={observer.engine.running ? "YES" : "NO"}
+              />
               <DataRow label="Bot" value={observer.engine.bot} />
               <DataRow label="Trade" value={observer.engine.trade} />
               <DataRow label="Mode" value={observer.calmstack.mode} />
@@ -388,17 +464,19 @@ export default function App() {
               )}
             </DataCard>
 
+            <AuthorityTimeline timeline={observer.authorityTimeline ?? []} />
+
             <DataCard title="Raw Snapshot">
-              <pre className="raw-block">{JSON.stringify(observer, null, 2)}</pre>
+              <pre className="raw-block">
+                {JSON.stringify(observer, null, 2)}
+              </pre>
             </DataCard>
           </div>
 
           <div className="log-card">
             <div className="log-header">
               <h2>Event Stream</h2>
-              <span className="muted">
-                Last update: {formatTs(observer.ts)}
-              </span>
+              <span className="muted">Last update: {formatTs(observer.ts)}</span>
             </div>
 
             <div className="log-body">

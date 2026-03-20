@@ -349,3 +349,74 @@ body {
     grid-template-columns: 1fr;
   }
 }
+.panel {
+  background: #0b1a33;
+  padding: 20px;
+  border-radius: 16px;
+  margin-top: 20px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+label {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.badge {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-weight: bold;
+}
+
+.highlight {
+  font-size: 18px;
+  font-weight: bold;
+  color: #00ff88;
+}
+.timeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.timeline-item {
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.timeline-item:last-child {
+  border-bottom: none;
+}
+
+.timeline-time {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-bottom: 6px;
+}
+
+.timeline-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.timeline-from,
+.timeline-to {
+  color: #ffffff;
+}
+
+.timeline-arrow {
+  color: #4db6ff;
+}
+
+.timeline-reason {
+  font-size: 14px;
+  opacity: 0.85;
+}
