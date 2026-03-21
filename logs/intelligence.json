@@ -1,15 +1,15 @@
 {
   "intelligenceMode": "ADVISORY",
   "authorityState": "SCOUT",
-  "authorityStableCycles": 1,
-  "authorityUnstableCycles": 0,
-  "authorityTransitioned": true,
-  "volatilityState": "NORMAL",
-  "volatilityScore": 3.28,
+  "authorityStableCycles": 0,
+  "authorityUnstableCycles": 1,
+  "authorityTransitioned": false,
+  "volatilityState": "ELEVATED",
+  "volatilityScore": 5.34,
   "supervisorAuthorityGranted": false,
   "supervisorObserveOnly": false,
   "supervisorAdvisoryOnly": true,
   "supervisorNote": "Intelligence is running in ADVISORY mode; downstream output is non-binding.",
   "recommendedAction": "OBSERVE",
-  "timestampUtc": "2026-03-17T19:58:56.316Z"
+  "timestampUtc": "2026-03-21T02:49:56.110Z"
 }

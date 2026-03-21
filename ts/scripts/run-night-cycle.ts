@@ -1,7 +1,7 @@
 /**
  * CLAWBOT NIGHT CYCLE — OBSERVE ONLY
  */
-
+import { emitIntelligenceTelemetry } from "../shared/telemetry/intelligenceTelemetry";
 import fs from "fs";
 import path from "path";
 
@@ -129,6 +129,8 @@ async function runCycle() {
       decision,
       downstreamPacket: packet,
     });
+
+     emitIntelligenceTelemetry(supervisor);
 
     // --- EXECUTION BLOCK ---
     let finalAction = decision.action;

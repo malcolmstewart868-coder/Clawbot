@@ -6,8 +6,10 @@
  * intelligence state in real time.
  */
 
-import type { IntelligenceSupervisorResult } from "../../intelligence/intelligenceSupervisor";
-import { publishIntelligenceTelemetry } from "./intelligenceTelemetryStore";
+import type { IntelligenceSupervisorResult } from "../../../src/intelligence/intelligenceSupervisor";
+
+import { publishIntelligenceTelemetry } from "../../../src/shared/telemetry/intelligenceTelemetryStore";
+
 export interface IntelligenceTelemetryPayload {
   mode: string;
   authorityGranted: boolean;
@@ -20,7 +22,6 @@ export interface IntelligenceTelemetryPayload {
 export function emitIntelligenceTelemetry(
   result: IntelligenceSupervisorResult
 ): IntelligenceTelemetryPayload {
-
   const payload: IntelligenceTelemetryPayload = {
     mode: result.mode,
     authorityGranted: result.authorityGranted,
@@ -29,9 +30,8 @@ export function emitIntelligenceTelemetry(
     supervisorNote: result.supervisorNote,
     timestampUtc: result.timestampUtc,
     };
-    
     publishIntelligenceTelemetry(payload);
-  // Safe logging channel
+
   console.log("INTELLIGENCE_TELEMETRY", JSON.stringify(payload));
 
   return payload;
