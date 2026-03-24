@@ -80,14 +80,7 @@ export function publishIntelligenceTelemetry(
       ts: Date.now(),
       from: previous.mode,
       to: payload.mode,
-      reason: 
-        previous.mode === "SHADOW" &&
-      payload.mode === "ADVISORY"
-          ? "BOOTSTRAP_FIRST_TRANSITION"
-          : previous.mode === "ADVISORY" &&
-      payload.mode === "SHADOW"
-          ? 'AUTHORITY_RESET'
-          : "MODE_TRANSITION",
+      reason: payload.supervisorNote || "Mode transition",
     });
   }
 

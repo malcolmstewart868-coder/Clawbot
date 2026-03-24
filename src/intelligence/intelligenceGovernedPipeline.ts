@@ -26,7 +26,6 @@ import {
 } from "./intelligenceMode";
 
 import { emitIntelligenceTelemetry } from "../shared/telemetry/intelligenceTelemetry";
-
 interface GovernedScenario {
   name: string;
   context: IntelligenceEvaluationContext;
@@ -130,8 +129,11 @@ function runGovernedScenario(
   mode: IntelligenceMode,
   scenario: GovernedScenario,
 ): void {
-  setIntelligenceMode(mode);
 
+  // FORCE FIRST TRANSITION ( temporary bootstrap)
+if (mode === "SHADOW") {
+    setIntelligenceMode("ADVISORY");
+}
   const decision = evaluateIntelligence(scenario.context);
   const downstreamPacket = adaptIntelligenceToDownstream(decision);
   const supervisorResult = superviseIntelligence({
@@ -140,7 +142,7 @@ function runGovernedScenario(
   });
 
   emitIntelligenceTelemetry(supervisorResult);
-    
+   
   divider(`MODE: ${mode} | SCENARIO: ${scenario.name}`);
 
   printJsonBlock("INTELLIGENCE DECISION", decision);

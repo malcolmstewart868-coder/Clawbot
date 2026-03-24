@@ -7,7 +7,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   getLatestIntelligenceTelemetry as getStoredTelemetry,
   getAuthorityTimeline,
-} from "../../src/shared/telemetry/intelligenceTelemetryStore";
+} from "../shared/telemetry/intelligenceTelemetryStore";
 
   const app = express();
     app.use(
@@ -106,32 +106,24 @@ app.get("/api/observer", (_req, res) => {
   const telemetry = getStoredTelemetry();
   const authorityTimeline = getAuthorityTimeline();
 
-  res.json({
-    ok: true,
-    state: {
-      ...state,
-      intelligenceMode: telemetry?.mode ?? "SHADOW",
-      supervisor: telemetry
-        ? {
-            mode: telemetry.mode,
-            authorityGranted: telemetry.authorityGranted,
-            observeOnly: telemetry.observeOnly,
-            advisoryOnly: telemetry.advisoryOnly,
-            supervisorNote: telemetry.supervisorNote,
-            timestampUtc: telemetry.timestampUtc,
-          }
-        : {
+          const supervisor= telemetry ?? {
             mode: "SHADOW",
             authorityGranted: false,
             observeOnly: true,
             advisoryOnly: false,
-            supervisorNote: "No telemetry yet.",
+            supervisorNote: "Initialized",
             timestampUtc: new Date().toISOString(),
-          },
-      authorityTimeline,
-    },
-  });
-});
+          };
+       res.json({
+        ok: true,
+        state: {
+          ...state,
+          intelligenceMode: supervisor.mode,
+          supervisor,
+          authorityTimeline,
+      },
+  }),
+{}});
 
 // Stream logs/events to the UI (SSE)
 app.get("/api/events", (req, res) => {

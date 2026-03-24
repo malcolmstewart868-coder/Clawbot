@@ -5,11 +5,11 @@
   "authorityUnstableCycles": 1,
   "authorityTransitioned": false,
   "volatilityState": "ELEVATED",
-  "volatilityScore": 5.34,
+  "volatilityScore": 5.54,
   "supervisorAuthorityGranted": false,
   "supervisorObserveOnly": false,
   "supervisorAdvisoryOnly": true,
   "supervisorNote": "Intelligence is running in ADVISORY mode; downstream output is non-binding.",
   "recommendedAction": "OBSERVE",
-  "timestampUtc": "2026-03-21T02:49:56.110Z"
+  "timestampUtc": "2026-03-24T02:06:09.966Z"
 }

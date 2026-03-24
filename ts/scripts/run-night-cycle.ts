@@ -4,7 +4,7 @@
 import { emitIntelligenceTelemetry } from "../shared/telemetry/intelligenceTelemetry";
 import fs from "fs";
 import path from "path";
-
+import { applyAuthorityGate} from "../../src/intelligence/intelligenceAuthorityGate";
 import type { ReentryStabilizerState } from "../../src/intelligence/reentryStabilizer";
 import { evaluateIntelligence } from "../../src/intelligence/intelligenceEvaluator";
 import { adaptIntelligenceToDownstream } from "../../src/intelligence/intelligenceAdapter";
@@ -68,72 +68,21 @@ log({
 });
 
 // --- MAIN LOOP ---
-async function runCycle() {
+   async function runCycle() {
   try {
-    // ⚠️ Replace this later with real market feed
-    const mockMarket = {
-      h1Bias: "BULLISH",
-      m15Arm: Math.random() > 0.5,
-      m5Trigger: Math.random() > 0.7,
-    };
-
-    // --- INTELLIGENCE ---
-    const decision = evaluateIntelligence({
-      biasAligned: mockMarket.h1Bias === "BULLISH",
-      armAligned: mockMarket.m15Arm,
-      triggerReady: mockMarket.m5Trigger,
-      possibleInvalidation: false,
-      structureInvalid: false,
-      confidence: Math.random(),
+    // --- SUPERVISOR TELEMETRY ONLY (stable bridge) ---
+    const supervisorResult = superviseIntelligence({
+      decision: {
+        action: "OBSERVE",
+        reason: "Night cycle telemetry bridge",
+      } as any,
+      downstreamPacket: {} as any,
     });
 
-    const packet = adaptIntelligenceToDownstream(decision);
-
-    // --- VOLATILITY ---
-    const volatility = detectVolatility({
-      rangeExpansion: Math.random() * 2,
-      atrRatio: Math.random() * 2,
-      sweepFrequency: Math.random() * 2,
-      invalidationFrequency: Math.random() * 2,
-    });
-
-    const authority = controlVolatilityAuthority({
-      volatilityState: volatility.state,
-      state: authorityState,
-    });
-
-      authorityState = {
-  authorityState: authority.nextAuthorityState,
-  stableCycles: authority.stableCycles,
-  unstableCycles: authority.unstableCycles,
-    };
-
-     setIntelligenceMode(
-     mapAuthorityStateToIntelligenceMode(authority.nextAuthorityState),
-     );
-
-    // --- REENTRY ---
-    const reentry = stabilizeReentry({
-      volatilityState: volatility.state,
-      state: reentryState,
-    });
-
-      reentryState = {
-      stableCount: reentry.stableCount,
-      unstableCount: reentry.unstableCount,
-      currentMode: reentry.nextMode,
-    };
-
-    // --- SUPERVISOR ---
-    const supervisor = superviseIntelligence({
-      decision,
-      downstreamPacket: packet,
-    });
-
-     emitIntelligenceTelemetry(supervisor);
+    emitIntelligenceTelemetry(supervisorResult);
 
     // --- EXECUTION BLOCK ---
-    let finalAction = decision.action;
+    let finalAction = "OBSERVE";
     let execute = false;
 
     if (EXECUTION_LOCK) {
@@ -143,68 +92,46 @@ async function runCycle() {
       log({
         timestamp: new Date().toISOString(),
         message: "EXECUTION BLOCKED — OBSERVE MODE ACTIVE",
-    });
+      });
     }
 
     // --- LOG CYCLE ---
-   log({
-  timestamp: new Date().toISOString(),
-  mode: MODE,
-  h1Bias: mockMarket.h1Bias,
-  m15Arm: mockMarket.m15Arm,
-  m5Trigger: mockMarket.m5Trigger,
-
-  recommendedAction: finalAction,
-
-  guardrailStatus: supervisor.mode,
-  supervisorAuthorityGranted: supervisor.authorityGranted,
-  supervisorObserveOnly: supervisor.observeOnly,
-  supervisorAdvisoryOnly: supervisor.advisoryOnly,
-  supervisorNote: supervisor.supervisorNote,
-
-  volatilityState: volatility.state,
-  volatilityScore: volatility.score,
-  volatilityReasons: volatility.reasons.map((r) => r.code),
-
-  reentryState: reentry.nextMode,
-  reentryStableCount: reentry.stableCount,
-  reentryUnstableCount: reentry.unstableCount,
-  reentryUpgraded: reentry.upgraded,
-  reentryReset: reentry.reset,
-
-  intelligenceMode: mapAuthorityStateToIntelligenceMode(
-    authority.nextAuthorityState,
-  ),
-  authorityState: authority.nextAuthorityState,
-  authorityStableCycles: authority.stableCycles,
-  authorityUnstableCycles: authority.unstableCycles,
-  authorityTransitioned: authority.transitioned,
-  authorityReasons: authority.reasons.map((r) => r.code),
-
-  execute: false,
-  });
-
-    publishIntelligenceTelemetry({
-      intelligenceMode: mapAuthorityStateToIntelligenceMode(
-        authority.nextAuthorityState,
-      ),
-      authorityState: authority.nextAuthorityState,
-      authorityStableCycles: authority.stableCycles,
-      authorityUnstableCycles: authority.unstableCycles,
-      authorityTransitioned: authority.transitioned,
-
-      volatilityState: volatility.state,
-      volatilityScore: volatility.score,
-
-      supervisorAuthorityGranted: supervisor.authorityGranted,
-      supervisorObserveOnly: supervisor.observeOnly,
-      supervisorAdvisoryOnly: supervisor.advisoryOnly,
-      supervisorNote: supervisor.supervisorNote,
+    log({
+      timestamp: new Date().toISOString(),
+      mode: MODE,
+      h1Bias: "UNKNOWN",
+      m15Arm: false,
+      m5Trigger: false,
 
       recommendedAction: finalAction,
-      timestampUtc: new Date().toISOString(),
+
+      guardrailStatus: supervisorResult.mode,
+      supervisorAuthorityGranted: supervisorResult.authorityGranted,
+      supervisorObserveOnly: supervisorResult.observeOnly,
+      supervisorAdvisoryOnly: supervisorResult.advisoryOnly,
+      supervisorNote: supervisorResult.supervisorNote,
+
+      volatilityState: "UNKNOWN",
+      volatilityScore: 0,
+      volatilityReasons: [],
+
+      reentryState: "UNKNOWN",
+      reentryStableCount: 0,
+      reentryUnstableCount: 0,
+      reentryUpgraded: false,
+      reentryReset: false,
+
+      intelligenceMode: supervisorResult.mode,
+      authorityState: "SHADOW",
+      authorityStableCycles: 0,
+      authorityUnstableCycles: 0,
+      authorityTransitioned: false,
+      authorityReasons: [],
+
+      execute,
     });
 
+    
   } catch (err: any) {
     log({
       timestamp: new Date().toISOString(),
