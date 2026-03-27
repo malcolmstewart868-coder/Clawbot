@@ -4,28 +4,17 @@
 import { emitIntelligenceTelemetry } from "../shared/telemetry/intelligenceTelemetry";
 import fs from "fs";
 import path from "path";
-import { applyAuthorityGate} from "../../src/intelligence/intelligenceAuthorityGate";
+import { applyAuthorityGate } from "../../src/intelligence/intelligenceAuthorityGate";
 import type { ReentryStabilizerState } from "../../src/intelligence/reentryStabilizer";
-import { evaluateIntelligence } from "../../src/intelligence/intelligenceEvaluator";
-import { adaptIntelligenceToDownstream } from "../../src/intelligence/intelligenceAdapter";
+
 import { superviseIntelligence } from "../../src/intelligence/intelligenceSupervisor";
 
-import { detectVolatility } from "../../src/intelligence/volatilityDetector";
-import { stabilizeReentry } from "../../src/intelligence/reentryStabilizer";
-
 import { setIntelligenceMode } from "../../src/intelligence/intelligenceMode";
-
-import {
-  controlVolatilityAuthority,
-  mapAuthorityStateToIntelligenceMode,
-  type VolatilityAuthorityState,
-} from "../../src/intelligence/volatilityAuthorityController";
-
-import { publishIntelligenceTelemetry } from "../../src/intelligence/intelligenceTelemetry";
+import type { VolatilityAuthorityState } from "../../src/intelligence/volatilityAuthorityController";
 
 // --- CONFIG ---
 const LOG_PATH = path.resolve("logs/overnight.log");
-const CYCLE_INTERVAL_MS = 5000; // 5 seconds
+const CYCLE_INTERVAL_MS = 5000;
 
 // --- HARD LOCK ---
 const MODE = "OBSERVE_ONLY";
@@ -44,12 +33,14 @@ let authorityState: VolatilityAuthorityState = {
   unstableCycles: 0,
 };
 
+let cycleRunning = false;
+
 // --- INIT ---
 if (!fs.existsSync("logs")) {
   fs.mkdirSync("logs");
 }
 
-// Force SHADOW mode
+
 setIntelligenceMode("SHADOW");
 
 // --- LOGGER ---
@@ -68,9 +59,19 @@ log({
 });
 
 // --- MAIN LOOP ---
-   async function runCycle() {
+
+async function runCycle() {
+  if (cycleRunning) {
+    log({
+      timestamp: new Date().toISOString(),
+      message: "CYCLE SKIPPED — PREVIOUS CYCLE STILL RUNNING",
+    });
+    return;
+  }
+
+  cycleRunning = true;
+
   try {
-    // --- SUPERVISOR TELEMETRY ONLY (stable bridge) ---
     const supervisorResult = superviseIntelligence({
       decision: {
         action: "OBSERVE",
@@ -79,13 +80,25 @@ log({
       downstreamPacket: {} as any,
     });
 
-    emitIntelligenceTelemetry(supervisorResult);
+    if (!supervisorResult) {
+      throw new Error("supervisorResult missing");
+    }
 
-    // --- EXECUTION BLOCK ---
-    let finalAction = "OBSERVE";
-    let execute = false;
+    const gatedResult = applyAuthorityGate({
+      candidateAction: "OBSERVE",
+      supervisor: {
+        authorityGranted: supervisorResult.authorityGranted,
+        observeOnly: supervisorResult.observeOnly,
+        advisoryOnly: supervisorResult.advisoryOnly,
+        supervisorNote: supervisorResult.supervisorNote,
+        mode: supervisorResult.mode,
+      },
+    });
 
-    if (EXECUTION_LOCK) {
+    let finalAction = gatedResult.finalAction;
+    let execute = gatedResult.execute;
+
+    if (EXECUTION_LOCK || MODE === "OBSERVE_ONLY") {
       finalAction = "OBSERVE";
       execute = false;
 
@@ -95,15 +108,23 @@ log({
       });
     }
 
-    // --- LOG CYCLE ---
+    emitIntelligenceTelemetry({
+      ...supervisorResult,
+      authorityGranted: false,
+      observeOnly: true,
+      advisoryOnly: true,
+    });
+
     log({
       timestamp: new Date().toISOString(),
       mode: MODE,
+
       h1Bias: "UNKNOWN",
       m15Arm: false,
       m5Trigger: false,
 
-      recommendedAction: finalAction,
+      recommendedAction: gatedResult.finalAction,
+      finalAction,
 
       guardrailStatus: supervisorResult.mode,
       supervisorAuthorityGranted: supervisorResult.authorityGranted,
@@ -111,40 +132,43 @@ log({
       supervisorAdvisoryOnly: supervisorResult.advisoryOnly,
       supervisorNote: supervisorResult.supervisorNote,
 
+      gateAuthorityGranted: gatedResult.authorityGranted,
+      gateReason: gatedResult.gateReason,
+
       volatilityState: "UNKNOWN",
       volatilityScore: 0,
       volatilityReasons: [],
 
-      reentryState: "UNKNOWN",
-      reentryStableCount: 0,
-      reentryUnstableCount: 0,
+      reentryState: reentryState.currentMode ?? "UNKNOWN",
+      reentryStableCount: reentryState.stableCount ?? 0,
+      reentryUnstableCount: reentryState.unstableCount ?? 0,
       reentryUpgraded: false,
       reentryReset: false,
 
       intelligenceMode: supervisorResult.mode,
-      authorityState: "SHADOW",
-      authorityStableCycles: 0,
-      authorityUnstableCycles: 0,
+      authorityState: authorityState.authorityState,
+      authorityStableCycles: authorityState.stableCycles,
+      authorityUnstableCycles: authorityState.unstableCycles,
       authorityTransitioned: false,
       authorityReasons: [],
 
       execute,
     });
-
-    
   } catch (err: any) {
     log({
       timestamp: new Date().toISOString(),
-      error: err.message,
+      error: err?.message ?? String(err),
     });
 
     log({
       timestamp: new Date().toISOString(),
       message: "SAFE RESTART INITIATED",
     });
+  } finally {
+    cycleRunning = false;
   }
 }
 
 // --- LOOP ---
+void runCycle();
 setInterval(runCycle, CYCLE_INTERVAL_MS);
-
