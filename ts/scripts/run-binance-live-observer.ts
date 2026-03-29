@@ -401,27 +401,38 @@ async function runCycleForSymbol(symbol: SymbolCode): Promise<void> {
 
     const nextReentryState = reentryStateBySymbol[symbol];
 
-    const nextAuthorityResult = controlVolatilityAuthority({
-      currentState: authorityStateBySymbol[symbol],
-      volatilityState: (volatilityResult as any)?.state ?? "UNKNOWN",
-      reentryState: nextReentryState,
-    } as any);
+    const rawAuthorityResult = controlVolatilityAuthority({
+  state: authorityStateBySymbol[symbol],
+  volatilityState: (volatilityResult as any)?.state ?? "UNKNOWN",
+} as any);
 
-    authorityStateBySymbol[symbol] = {
-      authorityState:
-        nextAuthorityResult.nextAuthorityState ?? authorityStateBySymbol[symbol].authorityState,
-      stableCycles:
-        nextAuthorityResult.stableCycles ?? authorityStateBySymbol[symbol].stableCycles,
-      unstableCycles:
-        nextAuthorityResult.unstableCycles ?? authorityStateBySymbol[symbol].unstableCycles,
-    };
+const nextAuthorityResult = rawAuthorityResult ?? {};
 
-    const nextAuthorityState = authorityStateBySymbol[symbol];
+authorityStateBySymbol[symbol] = {
+  authorityState:
+    nextAuthorityResult.nextAuthorityState ??
+    authorityStateBySymbol[symbol]?.authorityState ??
+    "SHADOW",
+  stableCycles:
+    nextAuthorityResult.stableCycles ??
+    authorityStateBySymbol[symbol]?.stableCycles ??
+    0,
+  unstableCycles:
+    nextAuthorityResult.unstableCycles ??
+    authorityStateBySymbol[symbol]?.unstableCycles ??
+    0,
+};
 
-    const mappedMode = mapAuthorityStateToIntelligenceMode(
-      authorityStateBySymbol[symbol].authorityState,
-    );
-    setIntelligenceMode(mappedMode);
+const nextAuthorityState = authorityStateBySymbol[symbol] ?? {
+  authorityState: "SHADOW",
+  stableCycles: 0,
+  unstableCycles: 0,
+};
+
+const mappedMode = mapAuthorityStateToIntelligenceMode(
+  nextAuthorityState.authorityState,
+);
+setIntelligenceMode(mappedMode);
 
     const intelligenceResult = evaluateIntelligence({
       symbol,
@@ -536,10 +547,10 @@ async function runCycleForSymbol(symbol: SymbolCode): Promise<void> {
       gate_authority_granted: toBoolean(gatedResult?.authorityGranted),
       gate_reason: safeString(gatedResult?.gateReason),
 
-      intelligence_mode: safeString(mappedMode),
+      intelligence_mode: safeString(mappedMode ?? "SHADOW"),
     
     
-      authority_state: safeString(nextAuthorityState?.authorityState),
+      authority_state: safeString(nextAuthorityState?.authorityState ?? "SHADOW"),
     };
 
     log(cycleLog);
