@@ -38,7 +38,8 @@ export interface ReentryStabilizerState {
 }
 
 export interface ReentryStabilizerInput {
-  volatilityState: VolatilityState;
+  constantState: ReentryStabilizerState
+  volatility: VolatilityState;
   state: ReentryStabilizerState;
 }
 
@@ -81,7 +82,7 @@ function reason(code: string, message: string): ReentryStabilizerReason {
 export function stabilizeReentry(
   input: ReentryStabilizerInput,
 ): ReentryStabilizerResult {
-  const { volatilityState, state } = input;
+  const { volatility, state } = input;
 
   let stableCount = state.stableCount;
   let unstableCount = state.unstableCount;
@@ -91,7 +92,7 @@ export function stabilizeReentry(
 
   const reasons: ReentryStabilizerReason[] = [];
 
-  if (volatilityState === "NORMAL") {
+  if (volatility === "NORMAL") {
     stableCount += 1;
     unstableCount = 0;
 
@@ -150,7 +151,7 @@ export function stabilizeReentry(
       ),
     );
 
-    if (volatilityState === "ELEVATED") {
+    if (volatility === "ELEVATED") {
       reasons.push(
         reason(
           "ELEVATED_VOLATILITY_PRESENT",
@@ -159,7 +160,7 @@ export function stabilizeReentry(
       );
     }
 
-    if (volatilityState === "UNSTABLE") {
+    if (volatility === "UNSTABLE") {
       reasons.push(
         reason(
           "UNSTABLE_VOLATILITY_PRESENT",
