@@ -537,6 +537,8 @@ async function runCycleForSymbol(symbol: SymbolCode): Promise<void> {
       gate_reason: safeString(gatedResult?.gateReason),
 
       intelligence_mode: safeString(mappedMode),
+    
+    
       authority_state: safeString(nextAuthorityState?.authorityState),
     };
 
