@@ -118,6 +118,10 @@ type RuntimeLogEntry = {
   m5_trigger: boolean;
 
   volatility_state: string;
+  volatility_score?: number;
+  volatility_label?: string;
+  volatility_reasons?: string[];
+
   reentry_state: string;
   guardrail_status: string;
 
@@ -151,8 +155,14 @@ type RuntimeLogEntry = {
   bias_slope_pct?: number;
   bias_distance_pct?: number;
 
+  simulated_entry?: boolean;
+  simulated_side?: string;
+  simulated_entry_price?: number;
+  simulated_stop_price?: number;
+  simulated_take_profit_price?: number;
+  simulated_rr?: number;
+
   log_type?: string;
-  volatility_score?: number;
 
   error?: string;
   message?: string;
@@ -402,37 +412,37 @@ async function runCycleForSymbol(symbol: SymbolCode): Promise<void> {
     const nextReentryState = reentryStateBySymbol[symbol];
 
     const rawAuthorityResult = controlVolatilityAuthority({
-  state: authorityStateBySymbol[symbol],
-  volatilityState: (volatilityResult as any)?.state ?? "UNKNOWN",
-} as any);
+      state: authorityStateBySymbol[symbol],
+      volatilityState: (volatilityResult as any)?.state ?? "UNKNOWN",
+    } as any);
 
-const nextAuthorityResult = rawAuthorityResult ?? {};
+    const nextAuthorityResult = rawAuthorityResult ?? {};
 
-authorityStateBySymbol[symbol] = {
-  authorityState:
-    nextAuthorityResult.nextAuthorityState ??
-    authorityStateBySymbol[symbol]?.authorityState ??
-    "SHADOW",
-  stableCycles:
-    nextAuthorityResult.stableCycles ??
-    authorityStateBySymbol[symbol]?.stableCycles ??
-    0,
-  unstableCycles:
-    nextAuthorityResult.unstableCycles ??
-    authorityStateBySymbol[symbol]?.unstableCycles ??
-    0,
-};
+    authorityStateBySymbol[symbol] = {
+      authorityState:
+        nextAuthorityResult.nextAuthorityState ??
+        authorityStateBySymbol[symbol]?.authorityState ??
+        "SHADOW",
+      stableCycles:
+        nextAuthorityResult.stableCycles ??
+        authorityStateBySymbol[symbol]?.stableCycles ??
+        0,
+      unstableCycles:
+        nextAuthorityResult.unstableCycles ??
+        authorityStateBySymbol[symbol]?.unstableCycles ??
+        0,
+    };
 
-const nextAuthorityState = authorityStateBySymbol[symbol] ?? {
-  authorityState: "SHADOW",
-  stableCycles: 0,
-  unstableCycles: 0,
-};
+    const nextAuthorityState = authorityStateBySymbol[symbol] ?? {
+      authorityState: "SHADOW",
+      stableCycles: 0,
+      unstableCycles: 0,
+    };
 
-const mappedMode = mapAuthorityStateToIntelligenceMode(
-  nextAuthorityState.authorityState,
-);
-setIntelligenceMode(mappedMode);
+    const mappedMode = mapAuthorityStateToIntelligenceMode(
+      nextAuthorityState.authorityState,
+    );
+    setIntelligenceMode(mappedMode);
 
     const intelligenceResult = evaluateIntelligence({
       symbol,
@@ -467,7 +477,8 @@ setIntelligenceMode(mappedMode);
       },
     });
 
-    let recommendedAction = gatedResult.finalAction;
+    const recommendedAction = safeString(gatedResult.finalAction, "OBSERVE");
+
     let positionSizeRequested = 0;
     let capitalRequired = 0;
 
@@ -476,8 +487,8 @@ setIntelligenceMode(mappedMode);
       capitalRequired = calculateCapitalRequired(positionSizeRequested, snapshot.lastPrice);
     }
 
-    let executionAllowed = gatedResult.authorityGranted;
-    let execute = gatedResult.execute;
+    let executionAllowed = toBoolean(gatedResult.authorityGranted);
+    let execute = toBoolean(gatedResult.execute);
     let blockReason = safeString(gatedResult.gateReason, BLOCK_REASON);
     let exchangeOrderSent = false;
     let finalAction = recommendedAction;
@@ -504,6 +515,36 @@ setIntelligenceMode(mappedMode);
       advisoryOnly: true,
     });
 
+    let simulatedEntry = false;
+    let simulatedSide = "NONE";
+    let simulatedEntryPrice = 0;
+    let simulatedStopPrice = 0;
+    let simulatedTakeProfitPrice = 0;
+    let simulatedRr = 0;
+
+    if (
+      (recommendedAction === "BUY" || recommendedAction === "SELL") &&
+      finalAction === "OBSERVE" &&
+      execute === false
+    ) {
+      simulatedEntry = true;
+      simulatedSide = recommendedAction;
+      simulatedEntryPrice = Number(snapshot.lastPrice.toFixed(2));
+
+      const riskPct = 0.003;
+      const rewardPct = 0.006;
+
+      if (recommendedAction === "BUY") {
+        simulatedStopPrice = Number((snapshot.lastPrice * (1 - riskPct)).toFixed(2));
+        simulatedTakeProfitPrice = Number((snapshot.lastPrice * (1 + rewardPct)).toFixed(2));
+      } else {
+        simulatedStopPrice = Number((snapshot.lastPrice * (1 + riskPct)).toFixed(2));
+        simulatedTakeProfitPrice = Number((snapshot.lastPrice * (1 - rewardPct)).toFixed(2));
+      }
+
+      simulatedRr = 2;
+    }
+
     const cycleLog: RuntimeLogEntry = {
       log_type: "CYCLE",
       timestamp_utc: timestampUtc,
@@ -524,10 +565,15 @@ setIntelligenceMode(mappedMode);
 
       volatility_state: safeString((volatilityResult as any)?.state),
       volatility_score: Number((volatilityResult as any)?.score ?? 0),
+      volatility_label: safeString((volatilityResult as any)?.cryptoLabel, "UNKNOWN"),
+      volatility_reasons: Array.isArray((volatilityResult as any)?.reasons)
+        ? (volatilityResult as any).reasons.map((r: any) => safeString(r?.code))
+        : [],
+
       reentry_state: safeString(nextReentryState?.currentMode),
       guardrail_status: safeString(supervisorResult?.mode),
 
-      recommended_action: safeString(gatedResult?.finalAction, "OBSERVE"),
+      recommended_action: recommendedAction,
       final_action: finalAction,
 
       position_size_requested: positionSizeRequested ?? 0,
@@ -548,9 +594,14 @@ setIntelligenceMode(mappedMode);
       gate_reason: safeString(gatedResult?.gateReason),
 
       intelligence_mode: safeString(mappedMode ?? "SHADOW"),
-    
-    
       authority_state: safeString(nextAuthorityState?.authorityState ?? "SHADOW"),
+
+      simulated_entry: simulatedEntry,
+      simulated_side: simulatedSide,
+      simulated_entry_price: simulatedEntryPrice,
+      simulated_stop_price: simulatedStopPrice,
+      simulated_take_profit_price: simulatedTakeProfitPrice,
+      simulated_rr: simulatedRr,
     };
 
     log(cycleLog);
@@ -568,6 +619,9 @@ setIntelligenceMode(mappedMode);
       m5_trigger: false,
 
       volatility_state: "UNKNOWN",
+      volatility_label: "UNKNOWN",
+      volatility_reasons: [],
+
       reentry_state: safeString(reentryStateBySymbol[symbol]?.currentMode),
       guardrail_status: "UNKNOWN",
 
@@ -583,6 +637,13 @@ setIntelligenceMode(mappedMode);
       block_reason: BLOCK_REASON,
       exchange_order_sent: false,
 
+      simulated_entry: false,
+      simulated_side: "NONE",
+      simulated_entry_price: 0,
+      simulated_stop_price: 0,
+      simulated_take_profit_price: 0,
+      simulated_rr: 0,
+
       error: message,
       message: "SAFE RECOVERY INITIATED",
     } satisfies RuntimeLogEntry);
@@ -597,21 +658,37 @@ setIntelligenceMode(mappedMode);
         symbol,
         mode: MODE,
         feed: FEED,
+
         h1_bias: "UNKNOWN",
         m15_arm: false,
         m5_trigger: false,
+
         volatility_state: "UNKNOWN",
+        volatility_label: "UNKNOWN",
+        volatility_reasons: [],
+
         reentry_state: safeString(reentryStateBySymbol[symbol]?.currentMode),
         guardrail_status: "UNKNOWN",
+
         recommended_action: "OBSERVE",
         final_action: "OBSERVE",
+
         position_size_requested: 0,
         capital_required: 0,
         capital_available: CAPITAL_AVAILABLE,
+
         execution_allowed: false,
         execute: false,
         block_reason: BLOCK_REASON,
         exchange_order_sent: false,
+
+        simulated_entry: false,
+        simulated_side: "NONE",
+        simulated_entry_price: 0,
+        simulated_stop_price: 0,
+        simulated_take_profit_price: 0,
+        simulated_rr: 0,
+
         message: "FEED INTERRUPTION — ATTEMPTING RECOVERY",
       } satisfies RuntimeLogEntry);
     }
@@ -622,9 +699,7 @@ setIntelligenceMode(mappedMode);
 // MAIN LOOP
 // -------------------------
 async function runCycle(): Promise<void> {
-  if (cycleRunning) {
-    return;
-  }
+  if (cycleRunning) return;
 
   cycleRunning = true;
 

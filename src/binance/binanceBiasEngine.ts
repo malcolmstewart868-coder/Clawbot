@@ -42,13 +42,14 @@ function clamp01(value: number): number {
 }
 
 /**
- * Bias Engine v1.0 (Canonical)
+ * Bias Engine v1.1 (Refined)
  * Binance-only perception layer
  *
- * Laws:
- * - Supports BULLISH / BEARISH / NEUTRAL
- * - Uses strength, not binary direction only
- * - Uses hysteresis so bias does not flip too easily
+ * Goals:
+ * - Reduce unnecessary NEUTRAL noise
+ * - Hold prior bias slightly longer
+ * - Preserve three-state awareness
+ * - Keep hysteresis intact
  */
 export function evaluateBinanceBias(input: BinanceBiasInput): BinanceBiasResult {
   const { h1Closes, previous } = input;
@@ -56,22 +57,22 @@ export function evaluateBinanceBias(input: BinanceBiasInput): BinanceBiasResult 
   const fastSma = sma(h1Closes, 9);
   const slowSma = sma(h1Closes, 21);
 
-if (fastSma === null || slowSma === null || h1Closes.length < 6) {
-  return {
-    bias: "NEUTRAL",
-    strength: 0,
-    fastSma,
-    slowSma,
-    slopePct: 0,
-    distancePct: 0,
-    reason: "INSUFFICIENT_H1_DATA",
-    updatedMemory: {
-      currentBias: "NEUTRAL",
-      lastStrength: 0,
-      holdCount: 0
-    }
-  };
-}
+  if (fastSma === null || slowSma === null || h1Closes.length < 6) {
+    return {
+      bias: "NEUTRAL",
+      strength: 0,
+      fastSma,
+      slowSma,
+      slopePct: 0,
+      distancePct: 0,
+      reason: "INSUFFICIENT_H1_DATA",
+      updatedMemory: {
+        currentBias: "NEUTRAL",
+        lastStrength: 0,
+        holdCount: 0,
+      },
+    };
+  }
 
   const last = h1Closes[h1Closes.length - 1]!;
   const prev5 = h1Closes[h1Closes.length - 6]!;
@@ -84,9 +85,14 @@ if (fastSma === null || slowSma === null || h1Closes.length < 6) {
   const rawStrength = Math.abs(distancePct) * 2 + Math.abs(slopePct) * 1.25;
   const strength = clamp01(rawStrength / 1.5);
 
-  const weakThreshold = 0.22;
-  const confirmThreshold = 0.35;
-  const flipThreshold = 0.5;
+  // Refined thresholds:
+  // - lower weak threshold so we don't collapse into neutral too easily
+  // - lower confirm threshold so valid directional structure is recognized sooner
+  // - lower flip threshold slightly for smoother controlled transitions
+  const weakThreshold = 0.15;
+  const confirmThreshold = 0.28;
+  const flipThreshold = 0.45;
+  const holdNeutralThreshold = 0.18;
 
   let nextBias: BinanceBias = "NEUTRAL";
   let reason = "NEUTRAL_RANGE";
@@ -100,32 +106,63 @@ if (fastSma === null || slowSma === null || h1Closes.length < 6) {
   } else if (strength < weakThreshold) {
     nextBias = "NEUTRAL";
     reason = "LOW_STRENGTH_NEUTRAL";
+  } else {
+    nextBias = "NEUTRAL";
+    reason = "MID_RANGE_NEUTRAL";
   }
 
-  // Hysteresis / bias memory:
-  // keep prior bias unless opposite side is meaningfully strong
-  if (previous.currentBias === "BULLISH" && nextBias === "BEARISH" && strength < flipThreshold) {
+  // Opposite-direction hysteresis:
+  // do not allow instant hard flips unless strength is meaningful
+  if (
+    previous.currentBias === "BULLISH" &&
+    nextBias === "BEARISH" &&
+    strength < flipThreshold
+  ) {
     nextBias = "NEUTRAL";
     reason = "BULLISH_RELEASE_TO_NEUTRAL";
   }
 
-  if (previous.currentBias === "BEARISH" && nextBias === "BULLISH" && strength < flipThreshold) {
+  if (
+    previous.currentBias === "BEARISH" &&
+    nextBias === "BULLISH" &&
+    strength < flipThreshold
+  ) {
     nextBias = "NEUTRAL";
     reason = "BEARISH_RELEASE_TO_NEUTRAL";
   }
 
-return {
-  bias: nextBias,
-  strength: Number(strength.toFixed(4)),
-  fastSma: Number(fastSma.toFixed(2)),
-  slowSma: Number(slowSma.toFixed(2)),
-  slopePct: Number(slopePct.toFixed(4)),
-  distancePct: Number(distancePct.toFixed(4)),
-  reason,
-  updatedMemory: {
-  currentBias: nextBias,
-  lastStrength: strength,
-  holdCount: previous.currentBias === nextBias ? previous.holdCount + 1 : 1,
+  // Neutral-collapse hysteresis:
+  // hold prior directional bias a bit longer instead of dropping to neutral too easily
+  if (
+    previous.currentBias === "BULLISH" &&
+    nextBias === "NEUTRAL" &&
+    strength >= holdNeutralThreshold
+  ) {
+    nextBias = "BULLISH";
+    reason = "BULLISH_HOLD_HYSTERESIS";
   }
- };
+
+  if (
+    previous.currentBias === "BEARISH" &&
+    nextBias === "NEUTRAL" &&
+    strength >= holdNeutralThreshold
+  ) {
+    nextBias = "BEARISH";
+    reason = "BEARISH_HOLD_HYSTERESIS";
+  }
+
+  return {
+    bias: nextBias,
+    strength: Number(strength.toFixed(4)),
+    fastSma: Number(fastSma.toFixed(2)),
+    slowSma: Number(slowSma.toFixed(2)),
+    slopePct: Number(slopePct.toFixed(4)),
+    distancePct: Number(distancePct.toFixed(4)),
+    reason,
+    updatedMemory: {
+      currentBias: nextBias,
+      lastStrength: strength,
+      holdCount: previous.currentBias === nextBias ? previous.holdCount + 1 : 1,
+    },
+  };
 }
