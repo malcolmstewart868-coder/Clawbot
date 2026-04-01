@@ -127,6 +127,7 @@ type RuntimeLogEntry = {
 
   recommended_action: string;
   final_action: string;
+  observer_recommendation?: string;
 
   position_size_requested: number;
   capital_required: number;
@@ -161,6 +162,18 @@ type RuntimeLogEntry = {
   simulated_stop_price?: number;
   simulated_take_profit_price?: number;
   simulated_rr?: number;
+
+  buy_path_h1_ready?: boolean;
+  buy_path_m15_ready?: boolean;
+  buy_path_m5_ready?: boolean;
+  buy_path_ready?: boolean;
+
+  sell_path_h1_ready?: boolean;
+  sell_path_m15_ready?: boolean;
+  sell_path_m5_ready?: boolean;
+  sell_path_ready?: boolean;
+
+  market_state?: string;
 
   log_type?: string;
 
@@ -212,6 +225,70 @@ const authorityStateBySymbol: Record<SymbolCode, VolatilityAuthorityState> = {
   },
 };
 
+export type MarketState =
+  | "TREND_CONTINUATION"
+  | "PULLBACK"
+  | "REVERSAL_ATTEMPT"
+  | "COMPRESSION"
+  | "UNSTRUCTURED";
+
+type MarketStateInput = {
+  bias: "BULLISH" | "BEARISH" | "NEUTRAL";
+  m15Aligned: boolean;
+  m5Aligned: boolean;
+  m15AgainstBias: boolean;
+  m5AgainstBias: boolean;
+  compressionDetected: boolean;
+  impulseExpansionDetected: boolean;
+  volatilityLabel?: string;
+  reentryState?: string;
+};
+
+export function classifyMarketState(input: MarketStateInput): MarketState {
+  const {
+    bias,
+    m15Aligned,
+    m5Aligned,
+    m15AgainstBias,
+    m5AgainstBias,
+    compressionDetected,
+    impulseExpansionDetected,
+    volatilityLabel,
+    reentryState,
+  } = input;
+
+  const bullishOrBearish = bias === "BULLISH" || bias === "BEARISH";
+
+  const continuationReady =
+    bullishOrBearish &&
+    m15Aligned &&
+    m5Aligned &&
+    impulseExpansionDetected &&
+    !compressionDetected;
+
+  const pullbackReady =
+    bullishOrBearish &&
+    m15Aligned &&
+    !m5Aligned &&
+    !m15AgainstBias;
+
+  const reversalAttemptReady =
+    bullishOrBearish &&
+    (m15AgainstBias || m5AgainstBias) &&
+    reentryState !== "ACTIVE";
+
+  const hardCompression =
+    compressionDetected &&
+    !impulseExpansionDetected &&
+    volatilityLabel !== "EXPANSION";
+
+  if (continuationReady) return "TREND_CONTINUATION";
+  if (pullbackReady) return "PULLBACK";
+  if (reversalAttemptReady) return "REVERSAL_ATTEMPT";
+  if (hardCompression) return "COMPRESSION";
+  return "UNSTRUCTURED";
+}
+
 // -------------------------
 // INIT
 // -------------------------
@@ -257,6 +334,24 @@ log({
 // -------------------------
 // HELPERS
 // -------------------------
+function mapMarketStateToRecommendation(
+  marketState: "COMPRESSION" | "PULLBACK" | "REVERSAL_ATTEMPT" | "TREND_CONTINUATION" | "UNSTRUCTURED"
+): "OBSERVE" | "PREPARE" | "SCOUT" | "CONFIRM" {
+  switch (marketState) {
+    case "COMPRESSION":
+      return "OBSERVE";
+    case "PULLBACK":
+      return "PREPARE";
+    case "REVERSAL_ATTEMPT":
+      return "SCOUT";
+    case "TREND_CONTINUATION":
+      return "CONFIRM";
+    case "UNSTRUCTURED":
+    default:
+      return "OBSERVE";
+  }
+}
+
 function parseKline(row: BinanceKline): Candle {
   return {
     openTime: row[0],
@@ -323,17 +418,29 @@ function getSimpleReadout(
   const m5Fast = sma(m5Closes, 5);
   const m5Slow = sma(m5Closes, 13);
 
-  const m15Arm =
-    m15Fast !== null &&
-    m15Slow !== null &&
-    ((h1Bias === "BULLISH" && m15Fast > m15Slow) ||
-      (h1Bias === "BEARISH" && m15Fast < m15Slow));
+  const buyPathM15Ready = m15Fast !== null && m15Slow !== null && m15Fast > m15Slow;
+  const sellPathM15Ready = m15Fast !== null && m15Slow !== null && m15Fast < m15Slow;
+  const buyPathM5Ready = m5Fast !== null && m5Slow !== null && m5Fast > m5Slow;
+  const sellPathM5Ready = m5Fast !== null && m5Slow !== null && m5Fast < m5Slow;
 
-  const m5Trigger =
-    m5Fast !== null &&
-    m5Slow !== null &&
-    ((h1Bias === "BULLISH" && m5Fast > m5Slow) ||
-      (h1Bias === "BEARISH" && m5Fast < m5Slow));
+  const m15Aligned =
+    (h1Bias === "BULLISH" && !sellPathM15Ready && buyPathM15Ready) ||
+    (h1Bias === "BEARISH" && !buyPathM15Ready && sellPathM15Ready);
+
+  const m5Aligned =
+    (h1Bias === "BULLISH" && !sellPathM5Ready && buyPathM5Ready) ||
+    (h1Bias === "BEARISH" && !buyPathM5Ready && sellPathM5Ready);
+
+  const m15AgainstBias =
+    (h1Bias === "BULLISH" && sellPathM15Ready) ||
+    (h1Bias === "BEARISH" && buyPathM15Ready);
+
+  const m5AgainstBias =
+    (h1Bias === "BULLISH" && sellPathM5Ready) ||
+    (h1Bias === "BEARISH" && buyPathM5Ready);
+
+  const m15Arm = m15Aligned;
+  const m5Trigger = m5Aligned;
 
   let candidateAction: SimpleTrigger = "OBSERVE";
   if (h1Bias === "BULLISH" && m15Arm && m5Trigger) candidateAction = "BUY";
@@ -371,11 +478,21 @@ function toBoolean(value: unknown): boolean {
   return Boolean(value);
 }
 
+
 // -------------------------
 // CORE PER-SYMBOL CYCLE
 // -------------------------
 async function runCycleForSymbol(symbol: SymbolCode): Promise<void> {
   const timestampUtc = new Date().toISOString();
+
+  let buyPathH1Ready = false;
+  let buyPathM15Ready = false;
+  let buyPathM5Ready = false;
+  let buyPathReady = false;
+  let sellPathH1Ready = false;
+  let sellPathM15Ready = false;
+  let sellPathM5Ready = false;
+  let sellPathReady = false;
 
   try {
     const snapshot = await getBinanceSnapshot(symbol);
@@ -389,6 +506,44 @@ async function runCycleForSymbol(symbol: SymbolCode): Promise<void> {
     biasMemoryBySymbol[symbol] = biasResult.updatedMemory;
 
     const simple = getSimpleReadout(snapshot, biasResult.bias);
+
+    const m15Closes = snapshot.m15.map((c) => c.close);
+    const m5Closes = snapshot.m5.map((c) => c.close);
+
+    const m15FastCheck = sma(m15Closes, 9);
+    const m15SlowCheck = sma(m15Closes, 21);
+    const m5FastCheck = sma(m5Closes, 5);
+    const m5SlowCheck = sma(m5Closes, 13);
+
+    buyPathH1Ready = simple.h1Bias === "BULLISH";
+    buyPathM15Ready =
+      m15FastCheck !== null && m15SlowCheck !== null && m15FastCheck > m15SlowCheck;
+    buyPathM5Ready =
+      m5FastCheck !== null && m5SlowCheck !== null && m5FastCheck > m5SlowCheck;
+    buyPathReady = buyPathH1Ready && buyPathM15Ready && buyPathM5Ready;
+
+    sellPathH1Ready = simple.h1Bias === "BEARISH";
+    sellPathM15Ready =
+      m15FastCheck !== null && m15SlowCheck !== null && m15FastCheck < m15SlowCheck;
+    sellPathM5Ready =
+      m5FastCheck !== null && m5SlowCheck !== null && m5FastCheck < m5SlowCheck;
+    sellPathReady = sellPathH1Ready && sellPathM15Ready && sellPathM5Ready;
+
+    const m15Aligned =
+      (simple.h1Bias === "BULLISH" && !sellPathM15Ready && buyPathM15Ready) ||
+      (simple.h1Bias === "BEARISH" && !buyPathM15Ready && sellPathM15Ready);
+
+    const m5Aligned =
+      (simple.h1Bias === "BULLISH" && !sellPathM5Ready && buyPathM5Ready) ||
+      (simple.h1Bias === "BEARISH" && !buyPathM5Ready && sellPathM5Ready);
+
+    const m15AgainstBias =
+      (simple.h1Bias === "BULLISH" && sellPathM15Ready) ||
+      (simple.h1Bias === "BEARISH" && buyPathM15Ready);
+
+    const m5AgainstBias =
+      (simple.h1Bias === "BULLISH" && sellPathM5Ready) ||
+      (simple.h1Bias === "BEARISH" && buyPathM5Ready);
 
     const volatilityResult = detectVolatility({
       h1: snapshot.h1,
@@ -410,6 +565,20 @@ async function runCycleForSymbol(symbol: SymbolCode): Promise<void> {
     };
 
     const nextReentryState = reentryStateBySymbol[symbol];
+
+const marketState = classifyMarketState({
+  bias: simple.h1Bias,
+  m15Aligned,
+  m5Aligned,
+  m15AgainstBias,
+  m5AgainstBias,
+  compressionDetected: (volatilityResult as any)?.compressionDetected ?? false,
+  impulseExpansionDetected: (volatilityResult as any)?.impulseExpansionDetected ?? false,
+  volatilityLabel: String((volatilityResult as any)?.label ?? "UNKNOWN"),
+  reentryState: nextReentryState?.currentMode,
+});
+
+    const observerRecommendation = mapMarketStateToRecommendation(marketState);
 
     const rawAuthorityResult = controlVolatilityAuthority({
       state: authorityStateBySymbol[symbol],
@@ -566,26 +735,26 @@ async function runCycleForSymbol(symbol: SymbolCode): Promise<void> {
       volatility_state: safeString((volatilityResult as any)?.state),
       volatility_score: Number((volatilityResult as any)?.score ?? 0),
       volatility_label: safeString((volatilityResult as any)?.cryptoLabel, "UNKNOWN"),
-      volatility_reasons: Array.isArray((volatilityResult as any)?.reasons)
-        ? (volatilityResult as any).reasons.map((r: any) => safeString(r?.code))
-        : [],
+  volatility_reasons: Array.isArray((volatilityResult as any)?.reasons)
+    ? (volatilityResult as any).reasons.map((r: any) => safeString(r?.code))
+    : [],
 
-      reentry_state: safeString(nextReentryState?.currentMode),
-      guardrail_status: safeString(supervisorResult?.mode),
+  reentry_state: safeString(nextReentryState?.currentMode),
+  guardrail_status: safeString(supervisorResult?.mode),
 
-      recommended_action: recommendedAction,
-      final_action: finalAction,
+  recommended_action: recommendedAction,
+  final_action: finalAction,
+  
+  position_size_requested: positionSizeRequested ?? 0,
+  capital_required: capitalRequired ?? 0,
+  capital_available: CAPITAL_AVAILABLE,
 
-      position_size_requested: positionSizeRequested ?? 0,
-      capital_required: capitalRequired ?? 0,
-      capital_available: CAPITAL_AVAILABLE,
+  execution_allowed: executionAllowed,
+  execute,
+  block_reason: blockReason,
+  exchange_order_sent: exchangeOrderSent,
 
-      execution_allowed: executionAllowed,
-      execute,
-      block_reason: blockReason,
-      exchange_order_sent: exchangeOrderSent,
-
-      supervisor_authority_granted: toBoolean(supervisorResult?.authorityGranted),
+  supervisor_authority_granted: toBoolean(supervisorResult?.authorityGranted),
       supervisor_observe_only: toBoolean(supervisorResult?.observeOnly),
       supervisor_advisory_only: toBoolean(supervisorResult?.advisoryOnly),
       supervisor_note: safeString(supervisorResult?.supervisorNote, ""),
@@ -596,12 +765,25 @@ async function runCycleForSymbol(symbol: SymbolCode): Promise<void> {
       intelligence_mode: safeString(mappedMode ?? "SHADOW"),
       authority_state: safeString(nextAuthorityState?.authorityState ?? "SHADOW"),
 
+      market_state: marketState,
+      observer_recommendation: observerRecommendation,
+      buy_path_h1_ready: buyPathH1Ready,
+      buy_path_m15_ready: buyPathM15Ready,
+      buy_path_m5_ready: buyPathM5Ready,
+      buy_path_ready: buyPathReady,
+
+      sell_path_h1_ready: sellPathH1Ready,
+      sell_path_m15_ready: sellPathM15Ready,
+      sell_path_m5_ready: sellPathM5Ready,
+      sell_path_ready: sellPathReady,
+
       simulated_entry: simulatedEntry,
       simulated_side: simulatedSide,
       simulated_entry_price: simulatedEntryPrice,
       simulated_stop_price: simulatedStopPrice,
       simulated_take_profit_price: simulatedTakeProfitPrice,
       simulated_rr: simulatedRr,
+
     };
 
     log(cycleLog);
@@ -636,6 +818,16 @@ async function runCycleForSymbol(symbol: SymbolCode): Promise<void> {
       execute: false,
       block_reason: BLOCK_REASON,
       exchange_order_sent: false,
+
+      buy_path_h1_ready: buyPathH1Ready,
+      buy_path_m15_ready: buyPathM15Ready,
+      buy_path_m5_ready: buyPathM5Ready,
+      buy_path_ready: buyPathReady,
+
+      sell_path_h1_ready: sellPathH1Ready,
+      sell_path_m15_ready: sellPathM15Ready,
+      sell_path_m5_ready: sellPathM5Ready,
+      sell_path_ready: sellPathReady,
 
       simulated_entry: false,
       simulated_side: "NONE",
