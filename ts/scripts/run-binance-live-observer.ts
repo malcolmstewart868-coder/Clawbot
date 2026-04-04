@@ -1,83 +1,33 @@
-/**
- * CLAWBOT BINANCE LIVE OBSERVER
- * MODE: LIVE_OBSERVE_INSUFFICIENT_FUNDS
- *
- * Purpose:
- * - Connect to Binance public market data only
- * - Reuse existing intelligence pipeline where possible
- * - Generate full decision intent
- * - Permanently block execution due to insufficient funds
- * - Write structured logs for validation
- *
- * Safety law:
- * - No exchange order call is allowed from this runner
- * - execute must always resolve to false
- * - block_reason must always resolve to INSUFFICIENT_FUNDS
- */
-
+import axios from "axios";
 import fs from "fs";
 import path from "path";
+import pino from "pino";
 
-import { evaluateIntelligence } from "../../src/intelligence/intelligenceEvaluator";
-import { adaptIntelligenceToDownstream } from "../../src/intelligence/intelligenceAdapter";
-import { superviseIntelligence } from "../../src/intelligence/intelligenceSupervisor";
-import { applyAuthorityGate } from "../../src/intelligence/intelligenceAuthorityGate";
+type MarketState =
+  | "COMPRESSION"
+  | "PULLBACK"
+  | "REVERSAL_ATTEMPT"
+  | "TREND_CONTINUATION"
+  | "UNSTRUCTURED";
 
-import { detectVolatility } from "../../src/intelligence/volatilityDetector";
-import {
-  stabilizeReentry,
-  type ReentryStabilizerState,
-} from "../../src/intelligence/reentryStabilizer";
+type ObserverRecommendation =
+  | "OBSERVE"
+  | "PREPARE"
+  | "SCOUT"
+  | "CONFIRM";
 
-import { setIntelligenceMode } from "../../src/intelligence/intelligenceMode";
-import {
-  controlVolatilityAuthority,
-  mapAuthorityStateToIntelligenceMode,
-  type VolatilityAuthorityState,
-} from "../../src/intelligence/volatilityAuthorityController";
+type Bias = "BULLISH" | "BEARISH" | "NEUTRAL";
 
-import { emitIntelligenceTelemetry } from "../shared/telemetry/intelligenceTelemetry";
-import {
-  evaluateBinanceBias,
-  type BinanceBiasMemory,
-} from "../../src/binance/binanceBiasEngine";
+type RuntimeMode =
+  | "LIVE_OBSERVE_INSUFFICIENT_FUNDS"
+  | "OBSERVE_ONLY"
+  | "SAFE_OBSERVER";
 
-// -------------------------
-// CONFIG
-// -------------------------
-const MODE = "LIVE_OBSERVE_INSUFFICIENT_FUNDS" as const;
-const FEED = "BINANCE_LIVE" as const;
-const LOG_PATH = path.resolve("logs/binance_observer.log");
-const CYCLE_INTERVAL_MS = 10_000;
+type VolatilityLabel = "COMPRESSION" | "NORMAL" | "EXPANSION";
 
-const SYMBOLS = ["BTCUSDT", "ETHUSDT"] as const;
-const EXECUTION_LOCK = true;
-const CAPITAL_AVAILABLE = 0.0;
-const BLOCK_REASON = "INSUFFICIENT_FUNDS" as const;
+type ReentryState = "ACTIVE" | "INACTIVE";
 
-const BINANCE_REST_BASE = "https://api.binance.com";
-
-// -------------------------
-// TYPES
-// -------------------------
-type SymbolCode = (typeof SYMBOLS)[number];
-
-type BinanceKline = [
-  number,
-  string,
-  string,
-  string,
-  string,
-  string,
-  number,
-  string,
-  number,
-  string,
-  string,
-  string,
-];
-
-type Candle = {
+interface Candle {
   openTime: number;
   open: number;
   high: number;
@@ -85,258 +35,588 @@ type Candle = {
   close: number;
   volume: number;
   closeTime: number;
-  trades: number;
-};
+}
 
-type TimeframeSnapshot = {
-  symbol: SymbolCode;
-  h1: Candle[];
-  m15: Candle[];
-  m5: Candle[];
-  lastPrice: number;
-};
+interface BiasMemoryState {
+  currentBias: Bias;
+  lastStrength: number;
+  holdCount: number;
+}
 
-type SimpleBias = "BULLISH" | "BEARISH" | "NEUTRAL";
-type SimpleTrigger = "BUY" | "SELL" | "OBSERVE";
+interface BiasResult {
+  bias: Bias;
+  strength: number;
+  holdCount: number;
+  emaFast: number;
+  emaSlow: number;
+}
 
-type EngineReadout = {
-  h1Bias: SimpleBias;
-  m15Arm: boolean;
-  m5Trigger: boolean;
-  candidateAction: SimpleTrigger;
-  reason: string;
-};
-
-type RuntimeLogEntry = {
-  timestamp_utc: string;
-  symbol: SymbolCode;
-  mode: typeof MODE;
-  feed: typeof FEED;
-
-  h1_bias: SimpleBias | string;
-  m15_arm: boolean;
-  m5_trigger: boolean;
-
-  volatility_state: string;
-  volatility_score?: number;
-  volatility_label?: string;
-  volatility_reasons?: string[];
-
-  reentry_state: string;
-  guardrail_status: string;
-
-  recommended_action: string;
-  final_action: string;
-  observer_recommendation?: string;
-
-  position_size_requested: number;
-  capital_required: number;
-  capital_available: number;
-
-  execution_allowed: boolean;
-  execute: boolean;
-  block_reason: string;
-  exchange_order_sent: boolean;
-
-  supervisor_authority_granted?: boolean;
-  supervisor_observe_only?: boolean;
-  supervisor_advisory_only?: boolean;
-  supervisor_note?: string;
-
-  gate_authority_granted?: boolean;
-  gate_reason?: string;
-
-  intelligence_mode?: string;
-  authority_state?: string;
-
-  bias_strength?: number;
-  bias_reason?: string;
-  bias_fast_sma?: number | null;
-  bias_slow_sma?: number | null;
-  bias_slope_pct?: number;
-  bias_distance_pct?: number;
-
-  simulated_entry?: boolean;
-  simulated_side?: string;
-  simulated_entry_price?: number;
-  simulated_stop_price?: number;
-  simulated_take_profit_price?: number;
-  simulated_rr?: number;
-
-  buy_path_h1_ready?: boolean;
-  buy_path_m15_ready?: boolean;
-  buy_path_m5_ready?: boolean;
-  buy_path_ready?: boolean;
-
-  sell_path_h1_ready?: boolean;
-  sell_path_m15_ready?: boolean;
-  sell_path_m5_ready?: boolean;
-  sell_path_ready?: boolean;
-
-  market_state?: string;
-
-  log_type?: string;
-
-  error?: string;
-  message?: string;
-};
-
-// -------------------------
-// STATE
-// -------------------------
-let cycleRunning = false;
-
-const reentryStateBySymbol: Record<SymbolCode, ReentryStabilizerState> = {
-  BTCUSDT: {
-    stableCount: 0,
-    unstableCount: 0,
-    currentMode: "SHADOW",
-  },
-  ETHUSDT: {
-    stableCount: 0,
-    unstableCount: 0,
-    currentMode: "SHADOW",
-  },
-};
-
-const biasMemoryBySymbol: Record<SymbolCode, BinanceBiasMemory> = {
-  BTCUSDT: {
-    currentBias: "NEUTRAL",
-    lastStrength: 0,
-    holdCount: 0,
-  },
-  ETHUSDT: {
-    currentBias: "NEUTRAL",
-    lastStrength: 0,
-    holdCount: 0,
-  },
-};
-
-const authorityStateBySymbol: Record<SymbolCode, VolatilityAuthorityState> = {
-  BTCUSDT: {
-    authorityState: "SHADOW",
-    stableCycles: 0,
-    unstableCycles: 0,
-  },
-  ETHUSDT: {
-    authorityState: "SHADOW",
-    stableCycles: 0,
-    unstableCycles: 0,
-  },
-};
-
-export type MarketState =
-  | "TREND_CONTINUATION"
-  | "PULLBACK"
-  | "REVERSAL_ATTEMPT"
-  | "COMPRESSION"
-  | "UNSTRUCTURED";
-
-type MarketStateInput = {
-  bias: "BULLISH" | "BEARISH" | "NEUTRAL";
-  m15Aligned: boolean;
-  m5Aligned: boolean;
-  m15AgainstBias: boolean;
-  m5AgainstBias: boolean;
+interface StructureSignals {
+  trendContinuationDetected: boolean;
+  pullbackDetected: boolean;
+  reversalAttemptDetected: boolean;
   compressionDetected: boolean;
   impulseExpansionDetected: boolean;
-  volatilityLabel?: string;
-  reentryState?: string;
-};
+  m15Aligned: boolean;
+  m5Aligned: boolean;
+  volatilityLabel: VolatilityLabel;
+  reentryState: ReentryState;
+  lastRangePct: number;
+  avgRangePct10: number;
+  wickBodyRatio: number;
+  displacementCount: number;
+}
 
-export function classifyMarketState(input: MarketStateInput): MarketState {
-  const {
-    bias,
-    m15Aligned,
-    m5Aligned,
-    m15AgainstBias,
-    m5AgainstBias,
+interface MarketStateResult {
+  marketState: MarketState;
+  signals: StructureSignals;
+}
+
+interface CycleLog {
+  log_type: "CYCLE";
+  timestamp_utc: string;
+  symbol: string;
+  mode: RuntimeMode;
+  execute: false;
+  block_reason: "INSUFFICIENT_FUNDS";
+  market_state: MarketState;
+  observer_recommendation: ObserverRecommendation;
+  bias: Bias;
+  bias_strength: number;
+  hold_count: number;
+  price: number;
+  ema_fast: number;
+  ema_slow: number;
+  last_range_pct: number;
+  avg_range_pct_10: number;
+  wick_body_ratio: number;
+  displacement_count: number;
+  volatility_label: VolatilityLabel;
+  reentry_state: ReentryState;
+  reentry_stabilization: boolean;
+  cooldown_active: boolean;
+  m15_aligned: boolean;
+  m5_aligned: boolean;
+  impulse_expansion_detected: boolean;
+  compression_detected: boolean;
+  allow_trade: false;
+  guardrail_status: "ACTIVE";
+}
+
+interface HeartbeatLog {
+  log_type: "HEARTBEAT";
+  timestamp_utc: string;
+  mode: RuntimeMode;
+  execute: false;
+  block_reason: "INSUFFICIENT_FUNDS";
+  symbols: string[];
+  polling_ms: number;
+  guardrail_status: "ACTIVE";
+}
+
+interface ErrorLog {
+  log_type: "ERROR";
+  timestamp_utc: string;
+  mode: RuntimeMode;
+  execute: false;
+  block_reason: "INSUFFICIENT_FUNDS";
+  symbol?: string;
+  error_message: string;
+}
+
+const BINANCE_BASE_URL =
+  process.env.BINANCE_BASE_URL?.trim() || "https://api.binance.com";
+
+const SYMBOLS = (process.env.BINANCE_OBSERVER_SYMBOLS || "BTCUSDT,ETHUSDT")
+  .split(",")
+  .map((s) => s.trim().toUpperCase())
+  .filter(Boolean);
+
+const INTERVAL = (process.env.BINANCE_KLINE_INTERVAL || "5m").trim();
+const POLLING_MS = Number(process.env.BINANCE_OBSERVER_POLL_MS || 15_000);
+const KLINE_LIMIT = Number(process.env.BINANCE_OBSERVER_KLINE_LIMIT || 120);
+
+const MODE: RuntimeMode = "LIVE_OBSERVE_INSUFFICIENT_FUNDS";
+const BLOCK_REASON = "INSUFFICIENT_FUNDS" as const;
+const EXECUTE = false as const;
+
+const logDate = new Date().toISOString().slice(0, 10);
+const logsDir = path.resolve(process.cwd(), "logs");
+const logFilePath = path.join(logsDir, `binance_observer_${logDate}.log`);
+
+fs.mkdirSync(logsDir, { recursive: true });
+
+const logFileStream = fs.createWriteStream(logFilePath, {
+  flags: "a",
+  encoding: "utf8",
+});
+
+const logger = pino(
+  {
+    name: "binance-live-observer",
+    level: process.env.LOG_LEVEL || "info",
+  },
+  pino.multistream([
+    { stream: process.stdout },
+    { stream: logFileStream },
+  ]),
+);
+
+function closeLogStream(): void {
+  try {
+    logFileStream.end();
+  } catch {
+    // no-op
+  }
+}
+
+const biasMemory = new Map<string, BiasMemoryState>();
+
+function nowUtc(): string {
+  return new Date().toISOString();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function toNumber(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function round(value: number, digits = 6): number {
+  return Number(value.toFixed(digits));
+}
+
+function firstOrThrow<T>(items: T[], label: string): T {
+  const value = items[0];
+  if (value === undefined) {
+    throw new Error(`${label} is empty`);
+  }
+  return value;
+}
+
+function lastOrThrow<T>(items: T[], label: string): T {
+  const value = items[items.length - 1];
+  if (value === undefined) {
+    throw new Error(`${label} is empty`);
+  }
+  return value;
+}
+
+function getOrThrow<T>(items: T[], index: number, label: string): T {
+  const value = items[index];
+  if (value === undefined) {
+    throw new Error(`${label}[${index}] is undefined`);
+  }
+  return value;
+}
+
+function parseKlines(raw: unknown[]): Candle[] {
+  return raw.map((row: any) => ({
+    openTime: toNumber(row[0]),
+    open: toNumber(row[1]),
+    high: toNumber(row[2]),
+    low: toNumber(row[3]),
+    close: toNumber(row[4]),
+    volume: toNumber(row[5]),
+    closeTime: toNumber(row[6]),
+  }));
+}
+
+async function fetchKlines(symbol: string): Promise<Candle[]> {
+  const response = await axios.get(`${BINANCE_BASE_URL}/api/v3/klines`, {
+    params: {
+      symbol,
+      interval: INTERVAL,
+      limit: KLINE_LIMIT,
+    },
+    timeout: 10_000,
+  });
+
+  if (!Array.isArray(response.data)) {
+    throw new Error(`Unexpected kline response for ${symbol}`);
+  }
+
+  return parseKlines(response.data);
+}
+
+function ema(values: number[], period: number): number[] {
+  if (values.length === 0) return [];
+
+  const multiplier = 2 / (period + 1);
+  const firstValue = firstOrThrow(values, "ema.values");
+  const result: number[] = [firstValue];
+
+  for (let i = 1; i < values.length; i += 1) {
+    const currentValue = getOrThrow(values, i, "ema.values");
+    const previousEma = getOrThrow(result, i - 1, "ema.result");
+    result.push(currentValue * multiplier + previousEma * (1 - multiplier));
+  }
+
+  return result;
+}
+
+function mean(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, v) => sum + v, 0) / values.length;
+}
+
+function stdDev(values: number[]): number {
+  if (values.length === 0) return 0;
+  const avg = mean(values);
+  const variance =
+    values.reduce((sum, v) => sum + (v - avg) ** 2, 0) / values.length;
+  return Math.sqrt(variance);
+}
+
+function getRangePct(candle: Candle): number {
+  return candle.close === 0 ? 0 : (candle.high - candle.low) / candle.close;
+}
+
+function getBodyPct(candle: Candle): number {
+  return candle.close === 0
+    ? 0
+    : Math.abs(candle.close - candle.open) / candle.close;
+}
+
+function getWickBodyRatio(candle: Candle): number {
+  const body = Math.abs(candle.close - candle.open);
+  const range = candle.high - candle.low;
+  const wick = Math.max(0, range - body);
+
+  if (body === 0) return wick > 0 ? 999 : 0;
+  return wick / body;
+}
+
+function candleDirection(candle: Candle): number {
+  return Math.sign(candle.close - candle.open);
+}
+
+function countDisplacementCandles(candles: Candle[]): number {
+  const recent = candles.slice(-4);
+  const baseline = candles.slice(-14, -4).map(getRangePct);
+  const avgRange = mean(baseline);
+
+  return recent.filter((c) => {
+    const rangePct = getRangePct(c);
+    const bodyPct = getBodyPct(c);
+    return rangePct > avgRange * 1.45 && bodyPct > rangePct * 0.55;
+  }).length;
+}
+
+function detectReentryStabilization(candles: Candle[]): boolean {
+  if (candles.length < 6) return false;
+
+  const recent = candles.slice(-3);
+  const prior = candles.slice(-6, -3);
+
+  const recentAvgRange = mean(recent.map(getRangePct));
+  const priorAvgRange = mean(prior.map(getRangePct));
+  const recentWickiness = mean(recent.map(getWickBodyRatio));
+
+  const directionChanges = recent.filter((c, i, arr) => {
+    if (i === 0) return false;
+
+    const prev = getOrThrow(arr, i - 1, "detectReentryStabilization.recent");
+    const prevDir = candleDirection(prev);
+    const currDir = candleDirection(c);
+
+    return prevDir !== 0 && currDir !== 0 && prevDir !== currDir;
+  }).length;
+
+  return (
+    recentAvgRange > priorAvgRange * 1.15 &&
+    recentWickiness > 1.6 &&
+    directionChanges >= 1
+  );
+}
+
+function detectCooldown(candles: Candle[]): boolean {
+  const recent = candles.slice(-3).map(getRangePct);
+  const prior = candles.slice(-13, -3).map(getRangePct);
+
+  const recentAvg = mean(recent);
+  const priorAvg = mean(prior);
+
+  return recentAvg > priorAvg * 1.8;
+}
+
+function classifyBias(symbol: string, closes: number[]): BiasResult {
+  const fastPeriod = 9;
+  const slowPeriod = 21;
+
+  const fastSeries = ema(closes, fastPeriod);
+  const slowSeries = ema(closes, slowPeriod);
+
+  const emaFast =
+    fastSeries.length > 0 ? lastOrThrow(fastSeries, "classifyBias.fastSeries") : 0;
+  const emaSlow =
+    slowSeries.length > 0 ? lastOrThrow(slowSeries, "classifyBias.slowSeries") : 0;
+
+  const rawDelta = emaSlow === 0 ? 0 : (emaFast - emaSlow) / emaSlow;
+  const strength = clamp(Math.abs(rawDelta) * 1000, 0, 1);
+
+  let proposedBias: Bias = "NEUTRAL";
+  const bullishThreshold = 0.0012;
+  const bearishThreshold = -0.0012;
+  const neutralBand = 0.0005;
+
+  if (rawDelta >= bullishThreshold) proposedBias = "BULLISH";
+  else if (rawDelta <= bearishThreshold) proposedBias = "BEARISH";
+  else if (Math.abs(rawDelta) <= neutralBand) proposedBias = "NEUTRAL";
+
+  const memory = biasMemory.get(symbol) || {
+    currentBias: "NEUTRAL" as Bias,
+    lastStrength: 0,
+    holdCount: 0,
+  };
+
+  let finalBias = memory.currentBias;
+  let holdCount = memory.holdCount;
+
+  if (proposedBias === memory.currentBias) {
+    finalBias = proposedBias;
+    holdCount += 1;
+  } else {
+    const hysteresisPass =
+      (proposedBias === "BULLISH" && rawDelta >= 0.0018) ||
+      (proposedBias === "BEARISH" && rawDelta <= -0.0018) ||
+      (proposedBias === "NEUTRAL" && Math.abs(rawDelta) <= 0.00035);
+
+    if (hysteresisPass) {
+      finalBias = proposedBias;
+      holdCount = 1;
+    } else {
+      finalBias = memory.currentBias;
+      holdCount = memory.holdCount + 1;
+    }
+  }
+
+  biasMemory.set(symbol, {
+    currentBias: finalBias,
+    lastStrength: strength,
+    holdCount,
+  });
+
+  return {
+    bias: finalBias,
+    strength,
+    holdCount,
+    emaFast,
+    emaSlow,
+  };
+}
+
+function computeStructureSignals(
+  candles: Candle[],
+  bias: Bias,
+): StructureSignals {
+  if (candles.length < 14) {
+    throw new Error("computeStructureSignals requires at least 14 candles");
+  }
+
+  const recent = lastOrThrow(candles, "computeStructureSignals.candles");
+  const prev = getOrThrow(
+    candles,
+    candles.length - 2,
+    "computeStructureSignals.candles",
+  );
+  const prev2 = getOrThrow(
+    candles,
+    candles.length - 3,
+    "computeStructureSignals.candles",
+  );
+
+  const last10 = candles.slice(-11, -1);
+  if (last10.length === 0) {
+    throw new Error("computeStructureSignals.last10 is empty");
+  }
+
+  const lastRangePct = getRangePct(recent);
+  const avgRangePct10 = mean(last10.map(getRangePct));
+  const wickBodyRatio = getWickBodyRatio(recent);
+  const displacementCount = countDisplacementCandles(candles);
+
+  const closes = candles.map((c) => c.close);
+  const emaFastSeries = ema(closes, 9);
+  const emaSlowSeries = ema(closes, 21);
+
+  const m5Fast =
+    emaFastSeries.length > 0
+      ? lastOrThrow(emaFastSeries, "computeStructureSignals.emaFastSeries")
+      : 0;
+
+  const m5Slow =
+    emaSlowSeries.length > 0
+      ? lastOrThrow(emaSlowSeries, "computeStructureSignals.emaSlowSeries")
+      : 0;
+
+  const aggregated3: Candle[] = [];
+  for (let i = 0; i < candles.length; i += 3) {
+    const slice = candles.slice(i, i + 3);
+    if (slice.length < 3) continue;
+
+    const first = firstOrThrow(slice, "computeStructureSignals.slice");
+    const last = lastOrThrow(slice, "computeStructureSignals.slice");
+
+    aggregated3.push({
+      openTime: first.openTime,
+      open: first.open,
+      high: Math.max(...slice.map((c) => c.high)),
+      low: Math.min(...slice.map((c) => c.low)),
+      close: last.close,
+      volume: slice.reduce((sum, c) => sum + c.volume, 0),
+      closeTime: last.closeTime,
+    });
+  }
+
+  const m15Closes = aggregated3.map((c) => c.close);
+  const m15FastSeries = ema(m15Closes, 5);
+  const m15SlowSeries = ema(m15Closes, 8);
+
+  const m15Fast =
+    m15FastSeries.length > 0
+      ? lastOrThrow(m15FastSeries, "computeStructureSignals.m15FastSeries")
+      : 0;
+
+  const m15Slow =
+    m15SlowSeries.length > 0
+      ? lastOrThrow(m15SlowSeries, "computeStructureSignals.m15SlowSeries")
+      : 0;
+
+  const m15Aligned =
+    bias === "BULLISH"
+      ? m15Fast > m15Slow
+      : bias === "BEARISH"
+        ? m15Fast < m15Slow
+        : false;
+
+  const m5Aligned =
+    bias === "BULLISH"
+      ? m5Fast > m5Slow
+      : bias === "BEARISH"
+        ? m5Fast < m5Slow
+        : false;
+
+  const reentryActive = detectReentryStabilization(candles);
+  const reentryState: ReentryState = reentryActive ? "ACTIVE" : "INACTIVE";
+
+  const impulseExpansionDetected =
+  displacementCount >= 1 &&
+  lastRangePct > avgRangePct10 * 1.18 &&
+  wickBodyRatio > 1.05;
+
+  const volatilityLabel: VolatilityLabel =
+    lastRangePct < avgRangePct10 * 0.72
+      ? "COMPRESSION"
+      : impulseExpansionDetected || lastRangePct > avgRangePct10 * 1.2
+        ? "EXPANSION"
+        : "NORMAL";
+
+  const biasDirection =
+    bias === "BULLISH" ? 1 : bias === "BEARISH" ? -1 : 0;
+
+  const recentDirection = candleDirection(recent);
+  const prevDirection = candleDirection(prev);
+  const prev2Direction = candleDirection(prev2);
+
+  const trendContinuationDetected =
+  displacementCount >= 1 &&
+  lastRangePct > avgRangePct10 * 1.05 &&
+  wickBodyRatio > 1.0;
+
+ const pullbackDetected =
+  !impulseExpansionDetected &&
+  displacementCount <= 1 &&
+  lastRangePct >= avgRangePct10 * 0.75 &&
+  lastRangePct <= avgRangePct10 * 1.15 &&
+  (
+    (m15Aligned && !m5Aligned) ||
+    (m15Aligned && wickBodyRatio >= 0.55) ||
+    (!m15Aligned && !m5Aligned && wickBodyRatio >= 0.9 && lastRangePct < avgRangePct10 * 1.05)
+  );
+  
+  const reversalAttemptDetected =
+  !impulseExpansionDetected &&
+  displacementCount <= 1 &&
+  lastRangePct >= avgRangePct10 * 0.9 &&
+  wickBodyRatio >= 0.95 &&
+  !m15Aligned &&
+  !m5Aligned;
+  const compressionDetected =
+  lastRangePct < avgRangePct10 * 1.05 &&
+  wickBodyRatio < 1.6 &&
+  displacementCount <= 1;
+
+  return {
+    trendContinuationDetected,
+    pullbackDetected,
+    reversalAttemptDetected,
     compressionDetected,
     impulseExpansionDetected,
+    m15Aligned,
+    m5Aligned,
     volatilityLabel,
     reentryState,
-  } = input;
-
-  const bullishOrBearish = bias === "BULLISH" || bias === "BEARISH";
-
-  const continuationReady =
-    bullishOrBearish &&
-    m15Aligned &&
-    m5Aligned &&
-    impulseExpansionDetected &&
-    !compressionDetected;
-
-  const pullbackReady =
-    bullishOrBearish &&
-    m15Aligned &&
-    !m5Aligned &&
-    !m15AgainstBias;
-
-  const reversalAttemptReady =
-    bullishOrBearish &&
-    (m15AgainstBias || m5AgainstBias) &&
-    reentryState !== "ACTIVE";
-
-  const hardCompression =
-    compressionDetected &&
-    !impulseExpansionDetected &&
-    volatilityLabel !== "EXPANSION";
-
-  if (continuationReady) return "TREND_CONTINUATION";
-  if (pullbackReady) return "PULLBACK";
-  if (reversalAttemptReady) return "REVERSAL_ATTEMPT";
-  if (hardCompression) return "COMPRESSION";
-  return "UNSTRUCTURED";
+    lastRangePct,
+    avgRangePct10,
+    wickBodyRatio,
+    displacementCount,
+  };
 }
 
-// -------------------------
-// INIT
-// -------------------------
-if (!fs.existsSync("logs")) {
-  fs.mkdirSync("logs");
+function classifyMarketState(candles: Candle[], bias: Bias): MarketStateResult {
+  const signals = computeStructureSignals(candles, bias);
+
+  if (signals.trendContinuationDetected) {
+    return {
+      marketState: "TREND_CONTINUATION",
+      signals,
+    };
+  }
+
+  if (signals.pullbackDetected) {
+    return {
+      marketState: "PULLBACK",
+      signals,
+    };
+  }
+
+  if (signals.reversalAttemptDetected) {
+    return {
+      marketState: "REVERSAL_ATTEMPT",
+      signals,
+    };
+  }
+
+  const compressionAllowed =
+    signals.compressionDetected &&
+    !signals.impulseExpansionDetected &&
+    !signals.m15Aligned &&
+    !signals.m5Aligned &&
+    signals.volatilityLabel !== "EXPANSION" &&
+    signals.reentryState !== "ACTIVE";
+
+  if (compressionAllowed) {
+    return {
+      marketState: "COMPRESSION",
+      signals,
+    };
+  }
+
+  return {
+    marketState: "UNSTRUCTURED",
+    signals,
+  };
 }
 
-setIntelligenceMode("SHADOW");
-
-// -------------------------
-// LOGGER
-// -------------------------
-function log(entry: RuntimeLogEntry | Record<string, unknown>): void {
-  const line = JSON.stringify(entry) + "\n";
-  fs.appendFileSync(LOG_PATH, line);
-  console.log(line.trim());
-}
-
-// -------------------------
-// STARTUP LOGS
-// -------------------------
-log({
-  timestamp_utc: new Date().toISOString(),
-  system: "CLAWBOT",
-  branch: "clawbot/binance-observer-v1",
-  origin: "CLAWBOT_FX_CORE_PRESERVED_V1",
-  message: "BINANCE OBSERVER BRANCH INITIALIZED — FX CORE ISOLATED",
-});
-
-log({
-  timestamp_utc: new Date().toISOString(),
-  system: "CLAWBOT",
-  mode: MODE,
-  feed: FEED,
-  symbols: [...SYMBOLS],
-  execution_lock: EXECUTION_LOCK,
-  capital_available: CAPITAL_AVAILABLE,
-  block_reason: BLOCK_REASON,
-  message:
-    "CLAWBOT LIVE BINANCE OBSERVER ACTIVE — EXECUTION LOCKED (INSUFFICIENT_FUNDS MODE)",
-});
-
-// -------------------------
-// HELPERS
-// -------------------------
-function mapMarketStateToRecommendation(
-  marketState: "COMPRESSION" | "PULLBACK" | "REVERSAL_ATTEMPT" | "TREND_CONTINUATION" | "UNSTRUCTURED"
-): "OBSERVE" | "PREPARE" | "SCOUT" | "CONFIRM" {
+function mapRecommendation(marketState: MarketState): ObserverRecommendation {
   switch (marketState) {
     case "COMPRESSION":
       return "OBSERVE";
@@ -352,559 +632,156 @@ function mapMarketStateToRecommendation(
   }
 }
 
-function parseKline(row: BinanceKline): Candle {
-  return {
-    openTime: row[0],
-    open: Number(row[1]),
-    high: Number(row[2]),
-    low: Number(row[3]),
-    close: Number(row[4]),
-    volume: Number(row[5]),
-    closeTime: row[6],
-    trades: row[8],
-  };
-}
+async function runCycleForSymbol(symbol: string): Promise<void> {
+  const candles = await fetchKlines(symbol);
 
-async function fetchKlines(
-  symbol: SymbolCode,
-  interval: "1h" | "15m" | "5m",
-  limit: number,
-): Promise<Candle[]> {
-  const url = `${BINANCE_REST_BASE}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Binance klines fetch failed: ${symbol} ${interval} ${response.status}`);
+  if (candles.length < 30) {
+    throw new Error(`Not enough candles returned for ${symbol}`);
   }
 
-  const data = (await response.json()) as BinanceKline[];
-  return data.map(parseKline);
-}
+  const closes = candles.map((c) => c.close);
+  const latest = lastOrThrow(candles, "runCycleForSymbol.candles");
 
-async function getBinanceSnapshot(symbol: SymbolCode): Promise<TimeframeSnapshot> {
-  const [h1, m15, m5] = await Promise.all([
-    fetchKlines(symbol, "1h", 120),
-    fetchKlines(symbol, "15m", 120),
-    fetchKlines(symbol, "5m", 120),
-  ]);
+  const biasData = classifyBias(symbol, closes);
+  const marketStateResult = classifyMarketState(candles, biasData.bias);
+  const observerRecommendation = mapRecommendation(marketStateResult.marketState);
 
-  const lastPrice = m5[m5.length - 1]?.close ?? 0;
+  const reentryStabilization =
+    marketStateResult.signals.reentryState === "ACTIVE";
+  const cooldownActive = detectCooldown(candles);
 
-  return {
+  const cycleLog: CycleLog = {
+    log_type: "CYCLE",
+    timestamp_utc: nowUtc(),
     symbol,
-    h1,
-    m15,
-    m5,
-    lastPrice,
+    mode: MODE,
+    execute: EXECUTE,
+    block_reason: BLOCK_REASON,
+    market_state: marketStateResult.marketState,
+    observer_recommendation: observerRecommendation,
+    bias: biasData.bias,
+    bias_strength: round(biasData.strength, 4),
+    hold_count: biasData.holdCount,
+    price: latest.close,
+    ema_fast: round(biasData.emaFast, 4),
+    ema_slow: round(biasData.emaSlow, 4),
+    last_range_pct: round(marketStateResult.signals.lastRangePct, 6),
+    avg_range_pct_10: round(marketStateResult.signals.avgRangePct10, 6),
+    wick_body_ratio: round(marketStateResult.signals.wickBodyRatio, 4),
+    displacement_count: marketStateResult.signals.displacementCount,
+    volatility_label: marketStateResult.signals.volatilityLabel,
+    reentry_state: marketStateResult.signals.reentryState,
+    reentry_stabilization: reentryStabilization,
+    cooldown_active: cooldownActive,
+    m15_aligned: marketStateResult.signals.m15Aligned,
+    m5_aligned: marketStateResult.signals.m5Aligned,
+    impulse_expansion_detected:
+      marketStateResult.signals.impulseExpansionDetected,
+    compression_detected: marketStateResult.signals.compressionDetected,
+    allow_trade: false,
+    guardrail_status: "ACTIVE",
   };
+
+  logger.info(cycleLog);
 }
 
-function sma(values: number[], period: number): number | null {
-  if (values.length < period) return null;
-  const slice = values.slice(-period);
-  const total = slice.reduce((sum, value) => sum + value, 0);
-  return total / period;
-}
+async function runObserver(): Promise<void> {
+  logger.info({
+    log_type: "LOG_TARGET",
+    timestamp_utc: nowUtc(),
+    log_file: logFilePath,
+  });
 
-function getSimpleReadout(
-  snapshot: TimeframeSnapshot,
-  h1Bias: SimpleBias,
-): EngineReadout {
-  const m15Closes = snapshot.m15.map((c) => c.close);
-  const m5Closes = snapshot.m5.map((c) => c.close);
+  logger.info({
+    log_type: "BOOT",
+    timestamp_utc: nowUtc(),
+    mode: MODE,
+    execute: EXECUTE,
+    block_reason: BLOCK_REASON,
+    symbols: SYMBOLS,
+    interval: INTERVAL,
+    polling_ms: POLLING_MS,
+    kline_limit: KLINE_LIMIT,
+    guardrail_status: "ACTIVE",
+    note: "CLAWBOT BINANCE OBSERVER ACTIVE — CLEAN RUNTIME RESET ENGAGED",
+  });
 
-  const m15Fast = sma(m15Closes, 9);
-  const m15Slow = sma(m15Closes, 21);
-  const m5Fast = sma(m5Closes, 5);
-  const m5Slow = sma(m5Closes, 13);
+  while (true) {
+    const startedAt = Date.now();
 
-  const buyPathM15Ready = m15Fast !== null && m15Slow !== null && m15Fast > m15Slow;
-  const sellPathM15Ready = m15Fast !== null && m15Slow !== null && m15Fast < m15Slow;
-  const buyPathM5Ready = m5Fast !== null && m5Slow !== null && m5Fast > m5Slow;
-  const sellPathM5Ready = m5Fast !== null && m5Slow !== null && m5Fast < m5Slow;
+    for (const symbol of SYMBOLS) {
+      try {
+        await runCycleForSymbol(symbol);
+      } catch (error: any) {
+        const errorLog: ErrorLog = {
+          log_type: "ERROR",
+          timestamp_utc: nowUtc(),
+          mode: MODE,
+          execute: EXECUTE,
+          block_reason: BLOCK_REASON,
+          symbol,
+          error_message:
+            error?.message || `Unknown runtime error while processing ${symbol}`,
+        };
 
-  const m15Aligned =
-    (h1Bias === "BULLISH" && !sellPathM15Ready && buyPathM15Ready) ||
-    (h1Bias === "BEARISH" && !buyPathM15Ready && sellPathM15Ready);
+        logger.error(errorLog);
+      }
+    }
 
-  const m5Aligned =
-    (h1Bias === "BULLISH" && !sellPathM5Ready && buyPathM5Ready) ||
-    (h1Bias === "BEARISH" && !buyPathM5Ready && sellPathM5Ready);
-
-  const m15AgainstBias =
-    (h1Bias === "BULLISH" && sellPathM15Ready) ||
-    (h1Bias === "BEARISH" && buyPathM15Ready);
-
-  const m5AgainstBias =
-    (h1Bias === "BULLISH" && sellPathM5Ready) ||
-    (h1Bias === "BEARISH" && buyPathM5Ready);
-
-  const m15Arm = m15Aligned;
-  const m5Trigger = m5Aligned;
-
-  let candidateAction: SimpleTrigger = "OBSERVE";
-  if (h1Bias === "BULLISH" && m15Arm && m5Trigger) candidateAction = "BUY";
-  if (h1Bias === "BEARISH" && m15Arm && m5Trigger) candidateAction = "SELL";
-
-  const reason =
-    candidateAction === "OBSERVE"
-      ? "No aligned setup"
-      : `Aligned ${candidateAction} setup detected`;
-
-  return {
-    h1Bias,
-    m15Arm,
-    m5Trigger,
-    candidateAction,
-    reason,
-  };
-}
-
-function calculateRequestedPositionSize(_symbol: SymbolCode, price: number): number {
-  if (price <= 0) return 0;
-  const notionalTargetUsd = 100;
-  return Number((notionalTargetUsd / price).toFixed(6));
-}
-
-function calculateCapitalRequired(positionSize: number, price: number): number {
-  return Number((positionSize * price).toFixed(2));
-}
-
-function safeString(value: unknown, fallback = "UNKNOWN"): string {
-  return typeof value === "string" && value.length > 0 ? value : fallback;
-}
-
-function toBoolean(value: unknown): boolean {
-  return Boolean(value);
-}
-
-
-// -------------------------
-// CORE PER-SYMBOL CYCLE
-// -------------------------
-async function runCycleForSymbol(symbol: SymbolCode): Promise<void> {
-  const timestampUtc = new Date().toISOString();
-
-  let buyPathH1Ready = false;
-  let buyPathM15Ready = false;
-  let buyPathM5Ready = false;
-  let buyPathReady = false;
-  let sellPathH1Ready = false;
-  let sellPathM15Ready = false;
-  let sellPathM5Ready = false;
-  let sellPathReady = false;
-
-  try {
-    const snapshot = await getBinanceSnapshot(symbol);
-
-    const biasResult = evaluateBinanceBias({
-      symbol,
-      h1Closes: snapshot.h1.map((c) => c.close),
-      previous: biasMemoryBySymbol[symbol],
-    });
-
-    biasMemoryBySymbol[symbol] = biasResult.updatedMemory;
-
-    const simple = getSimpleReadout(snapshot, biasResult.bias);
-
-    const m15Closes = snapshot.m15.map((c) => c.close);
-    const m5Closes = snapshot.m5.map((c) => c.close);
-
-    const m15FastCheck = sma(m15Closes, 9);
-    const m15SlowCheck = sma(m15Closes, 21);
-    const m5FastCheck = sma(m5Closes, 5);
-    const m5SlowCheck = sma(m5Closes, 13);
-
-    buyPathH1Ready = simple.h1Bias === "BULLISH";
-    buyPathM15Ready =
-      m15FastCheck !== null && m15SlowCheck !== null && m15FastCheck > m15SlowCheck;
-    buyPathM5Ready =
-      m5FastCheck !== null && m5SlowCheck !== null && m5FastCheck > m5SlowCheck;
-    buyPathReady = buyPathH1Ready && buyPathM15Ready && buyPathM5Ready;
-
-    sellPathH1Ready = simple.h1Bias === "BEARISH";
-    sellPathM15Ready =
-      m15FastCheck !== null && m15SlowCheck !== null && m15FastCheck < m15SlowCheck;
-    sellPathM5Ready =
-      m5FastCheck !== null && m5SlowCheck !== null && m5FastCheck < m5SlowCheck;
-    sellPathReady = sellPathH1Ready && sellPathM15Ready && sellPathM5Ready;
-
-    const m15Aligned =
-      (simple.h1Bias === "BULLISH" && !sellPathM15Ready && buyPathM15Ready) ||
-      (simple.h1Bias === "BEARISH" && !buyPathM15Ready && sellPathM15Ready);
-
-    const m5Aligned =
-      (simple.h1Bias === "BULLISH" && !sellPathM5Ready && buyPathM5Ready) ||
-      (simple.h1Bias === "BEARISH" && !buyPathM5Ready && sellPathM5Ready);
-
-    const m15AgainstBias =
-      (simple.h1Bias === "BULLISH" && sellPathM15Ready) ||
-      (simple.h1Bias === "BEARISH" && buyPathM15Ready);
-
-    const m5AgainstBias =
-      (simple.h1Bias === "BULLISH" && sellPathM5Ready) ||
-      (simple.h1Bias === "BEARISH" && buyPathM5Ready);
-
-    const volatilityResult = detectVolatility({
-      h1: snapshot.h1,
-      m15: snapshot.m15,
-      m5: snapshot.m5,
-      symbol,
-    } as any);
-
-    const nextReentryResult = stabilizeReentry({
-      volatilityState: (volatilityResult as any)?.state ?? "UNKNOWN",
-      state: reentryStateBySymbol[symbol],
-    } as any);
-
-    reentryStateBySymbol[symbol] = {
-      stableCount: nextReentryResult.stableCount ?? reentryStateBySymbol[symbol].stableCount,
-      unstableCount:
-        nextReentryResult.unstableCount ?? reentryStateBySymbol[symbol].unstableCount,
-      currentMode: nextReentryResult.nextMode ?? reentryStateBySymbol[symbol].currentMode,
+    const heartbeat: HeartbeatLog = {
+      log_type: "HEARTBEAT",
+      timestamp_utc: nowUtc(),
+      mode: MODE,
+      execute: EXECUTE,
+      block_reason: BLOCK_REASON,
+      symbols: SYMBOLS,
+      polling_ms: POLLING_MS,
+      guardrail_status: "ACTIVE",
     };
 
-    const nextReentryState = reentryStateBySymbol[symbol];
+    logger.info(heartbeat);
 
-const marketState = classifyMarketState({
-  bias: simple.h1Bias,
-  m15Aligned,
-  m5Aligned,
-  m15AgainstBias,
-  m5AgainstBias,
-  compressionDetected: (volatilityResult as any)?.compressionDetected ?? false,
-  impulseExpansionDetected: (volatilityResult as any)?.impulseExpansionDetected ?? false,
-  volatilityLabel: String((volatilityResult as any)?.label ?? "UNKNOWN"),
-  reentryState: nextReentryState?.currentMode,
+    const elapsed = Date.now() - startedAt;
+    const delay = Math.max(1_000, POLLING_MS - elapsed);
+    await sleep(delay);
+  }
+}
+
+process.on("SIGINT", () => {
+  logger.info({
+    log_type: "SHUTDOWN",
+    timestamp_utc: nowUtc(),
+    mode: MODE,
+    execute: EXECUTE,
+    block_reason: BLOCK_REASON,
+    note: "Observer stopped by SIGINT",
+  });
+  closeLogStream();
+  process.exit(0);
 });
 
-    const observerRecommendation = mapMarketStateToRecommendation(marketState);
+process.on("SIGTERM", () => {
+  logger.info({
+    log_type: "SHUTDOWN",
+    timestamp_utc: nowUtc(),
+    mode: MODE,
+    execute: EXECUTE,
+    block_reason: BLOCK_REASON,
+    note: "Observer stopped by SIGTERM",
+  });
+  closeLogStream();
+  process.exit(0);
+});
 
-    const rawAuthorityResult = controlVolatilityAuthority({
-      state: authorityStateBySymbol[symbol],
-      volatilityState: (volatilityResult as any)?.state ?? "UNKNOWN",
-    } as any);
-
-    const nextAuthorityResult = rawAuthorityResult ?? {};
-
-    authorityStateBySymbol[symbol] = {
-      authorityState:
-        nextAuthorityResult.nextAuthorityState ??
-        authorityStateBySymbol[symbol]?.authorityState ??
-        "SHADOW",
-      stableCycles:
-        nextAuthorityResult.stableCycles ??
-        authorityStateBySymbol[symbol]?.stableCycles ??
-        0,
-      unstableCycles:
-        nextAuthorityResult.unstableCycles ??
-        authorityStateBySymbol[symbol]?.unstableCycles ??
-        0,
-    };
-
-    const nextAuthorityState = authorityStateBySymbol[symbol] ?? {
-      authorityState: "SHADOW",
-      stableCycles: 0,
-      unstableCycles: 0,
-    };
-
-    const mappedMode = mapAuthorityStateToIntelligenceMode(
-      nextAuthorityState.authorityState,
-    );
-    setIntelligenceMode(mappedMode);
-
-    const intelligenceResult = evaluateIntelligence({
-      symbol,
-      marketSnapshot: snapshot,
-      bias: simple.h1Bias,
-      arm: simple.m15Arm,
-      trigger: simple.m5Trigger,
-      volatility: volatilityResult,
-      reentryState: nextReentryState,
-      authorityState: nextAuthorityState,
-      mode: mappedMode,
-    } as any);
-
-    const downstreamPacket = adaptIntelligenceToDownstream(intelligenceResult as any);
-
-    const supervisorResult = superviseIntelligence({
-      decision: {
-        action: simple.candidateAction,
-        reason: simple.reason,
-      } as any,
-      downstreamPacket,
-    });
-
-    const gatedResult = applyAuthorityGate({
-      candidateAction: simple.candidateAction,
-      supervisor: {
-        authorityGranted: supervisorResult.authorityGranted,
-        observeOnly: supervisorResult.observeOnly,
-        advisoryOnly: supervisorResult.advisoryOnly,
-        supervisorNote: supervisorResult.supervisorNote,
-        mode: supervisorResult.mode,
-      },
-    });
-
-    const recommendedAction = safeString(gatedResult.finalAction, "OBSERVE");
-
-    let positionSizeRequested = 0;
-    let capitalRequired = 0;
-
-    if (recommendedAction === "BUY" || recommendedAction === "SELL") {
-      positionSizeRequested = calculateRequestedPositionSize(symbol, snapshot.lastPrice);
-      capitalRequired = calculateCapitalRequired(positionSizeRequested, snapshot.lastPrice);
-    }
-
-    let executionAllowed = toBoolean(gatedResult.authorityGranted);
-    let execute = toBoolean(gatedResult.execute);
-    let blockReason = safeString(gatedResult.gateReason, BLOCK_REASON);
-    let exchangeOrderSent = false;
-    let finalAction = recommendedAction;
-
-    if (capitalRequired > CAPITAL_AVAILABLE) {
-      executionAllowed = false;
-      execute = false;
-      blockReason = BLOCK_REASON;
-      exchangeOrderSent = false;
-    }
-
-    if (EXECUTION_LOCK || MODE === "LIVE_OBSERVE_INSUFFICIENT_FUNDS") {
-      executionAllowed = false;
-      execute = false;
-      exchangeOrderSent = false;
-      blockReason = BLOCK_REASON;
-      finalAction = "OBSERVE";
-    }
-
-    emitIntelligenceTelemetry({
-      ...supervisorResult,
-      authorityGranted: false,
-      observeOnly: true,
-      advisoryOnly: true,
-    });
-
-    let simulatedEntry = false;
-    let simulatedSide = "NONE";
-    let simulatedEntryPrice = 0;
-    let simulatedStopPrice = 0;
-    let simulatedTakeProfitPrice = 0;
-    let simulatedRr = 0;
-
-    if (
-      (recommendedAction === "BUY" || recommendedAction === "SELL") &&
-      finalAction === "OBSERVE" &&
-      execute === false
-    ) {
-      simulatedEntry = true;
-      simulatedSide = recommendedAction;
-      simulatedEntryPrice = Number(snapshot.lastPrice.toFixed(2));
-
-      const riskPct = 0.003;
-      const rewardPct = 0.006;
-
-      if (recommendedAction === "BUY") {
-        simulatedStopPrice = Number((snapshot.lastPrice * (1 - riskPct)).toFixed(2));
-        simulatedTakeProfitPrice = Number((snapshot.lastPrice * (1 + rewardPct)).toFixed(2));
-      } else {
-        simulatedStopPrice = Number((snapshot.lastPrice * (1 + riskPct)).toFixed(2));
-        simulatedTakeProfitPrice = Number((snapshot.lastPrice * (1 - rewardPct)).toFixed(2));
-      }
-
-      simulatedRr = 2;
-    }
-
-    const cycleLog: RuntimeLogEntry = {
-      log_type: "CYCLE",
-      timestamp_utc: timestampUtc,
-      symbol,
-      mode: MODE,
-      feed: FEED,
-
-      h1_bias: simple.h1Bias ?? "UNKNOWN",
-      bias_strength: biasResult.strength,
-      bias_reason: biasResult.reason,
-      bias_fast_sma: biasResult.fastSma,
-      bias_slow_sma: biasResult.slowSma,
-      bias_slope_pct: biasResult.slopePct,
-      bias_distance_pct: biasResult.distancePct,
-
-      m15_arm: simple.m15Arm ?? false,
-      m5_trigger: simple.m5Trigger ?? false,
-
-      volatility_state: safeString((volatilityResult as any)?.state),
-      volatility_score: Number((volatilityResult as any)?.score ?? 0),
-      volatility_label: safeString((volatilityResult as any)?.cryptoLabel, "UNKNOWN"),
-  volatility_reasons: Array.isArray((volatilityResult as any)?.reasons)
-    ? (volatilityResult as any).reasons.map((r: any) => safeString(r?.code))
-    : [],
-
-  reentry_state: safeString(nextReentryState?.currentMode),
-  guardrail_status: safeString(supervisorResult?.mode),
-
-  recommended_action: recommendedAction,
-  final_action: finalAction,
-  
-  position_size_requested: positionSizeRequested ?? 0,
-  capital_required: capitalRequired ?? 0,
-  capital_available: CAPITAL_AVAILABLE,
-
-  execution_allowed: executionAllowed,
-  execute,
-  block_reason: blockReason,
-  exchange_order_sent: exchangeOrderSent,
-
-  supervisor_authority_granted: toBoolean(supervisorResult?.authorityGranted),
-      supervisor_observe_only: toBoolean(supervisorResult?.observeOnly),
-      supervisor_advisory_only: toBoolean(supervisorResult?.advisoryOnly),
-      supervisor_note: safeString(supervisorResult?.supervisorNote, ""),
-
-      gate_authority_granted: toBoolean(gatedResult?.authorityGranted),
-      gate_reason: safeString(gatedResult?.gateReason),
-
-      intelligence_mode: safeString(mappedMode ?? "SHADOW"),
-      authority_state: safeString(nextAuthorityState?.authorityState ?? "SHADOW"),
-
-      market_state: marketState,
-      observer_recommendation: observerRecommendation,
-      buy_path_h1_ready: buyPathH1Ready,
-      buy_path_m15_ready: buyPathM15Ready,
-      buy_path_m5_ready: buyPathM5Ready,
-      buy_path_ready: buyPathReady,
-
-      sell_path_h1_ready: sellPathH1Ready,
-      sell_path_m15_ready: sellPathM15Ready,
-      sell_path_m5_ready: sellPathM5Ready,
-      sell_path_ready: sellPathReady,
-
-      simulated_entry: simulatedEntry,
-      simulated_side: simulatedSide,
-      simulated_entry_price: simulatedEntryPrice,
-      simulated_stop_price: simulatedStopPrice,
-      simulated_take_profit_price: simulatedTakeProfitPrice,
-      simulated_rr: simulatedRr,
-
-    };
-
-    log(cycleLog);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-
-    log({
-      timestamp_utc: timestampUtc,
-      symbol,
-      mode: MODE,
-      feed: FEED,
-
-      h1_bias: "UNKNOWN",
-      m15_arm: false,
-      m5_trigger: false,
-
-      volatility_state: "UNKNOWN",
-      volatility_label: "UNKNOWN",
-      volatility_reasons: [],
-
-      reentry_state: safeString(reentryStateBySymbol[symbol]?.currentMode),
-      guardrail_status: "UNKNOWN",
-
-      recommended_action: "OBSERVE",
-      final_action: "OBSERVE",
-
-      position_size_requested: 0,
-      capital_required: 0,
-      capital_available: CAPITAL_AVAILABLE,
-
-      execution_allowed: false,
-      execute: false,
-      block_reason: BLOCK_REASON,
-      exchange_order_sent: false,
-
-      buy_path_h1_ready: buyPathH1Ready,
-      buy_path_m15_ready: buyPathM15Ready,
-      buy_path_m5_ready: buyPathM5Ready,
-      buy_path_ready: buyPathReady,
-
-      sell_path_h1_ready: sellPathH1Ready,
-      sell_path_m15_ready: sellPathM15Ready,
-      sell_path_m5_ready: sellPathM5Ready,
-      sell_path_ready: sellPathReady,
-
-      simulated_entry: false,
-      simulated_side: "NONE",
-      simulated_entry_price: 0,
-      simulated_stop_price: 0,
-      simulated_take_profit_price: 0,
-      simulated_rr: 0,
-
-      error: message,
-      message: "SAFE RECOVERY INITIATED",
-    } satisfies RuntimeLogEntry);
-
-    if (
-      message.toLowerCase().includes("fetch") ||
-      message.toLowerCase().includes("network") ||
-      message.toLowerCase().includes("binance")
-    ) {
-      log({
-        timestamp_utc: new Date().toISOString(),
-        symbol,
-        mode: MODE,
-        feed: FEED,
-
-        h1_bias: "UNKNOWN",
-        m15_arm: false,
-        m5_trigger: false,
-
-        volatility_state: "UNKNOWN",
-        volatility_label: "UNKNOWN",
-        volatility_reasons: [],
-
-        reentry_state: safeString(reentryStateBySymbol[symbol]?.currentMode),
-        guardrail_status: "UNKNOWN",
-
-        recommended_action: "OBSERVE",
-        final_action: "OBSERVE",
-
-        position_size_requested: 0,
-        capital_required: 0,
-        capital_available: CAPITAL_AVAILABLE,
-
-        execution_allowed: false,
-        execute: false,
-        block_reason: BLOCK_REASON,
-        exchange_order_sent: false,
-
-        simulated_entry: false,
-        simulated_side: "NONE",
-        simulated_entry_price: 0,
-        simulated_stop_price: 0,
-        simulated_take_profit_price: 0,
-        simulated_rr: 0,
-
-        message: "FEED INTERRUPTION — ATTEMPTING RECOVERY",
-      } satisfies RuntimeLogEntry);
-    }
-  }
-}
-
-// -------------------------
-// MAIN LOOP
-// -------------------------
-async function runCycle(): Promise<void> {
-  if (cycleRunning) return;
-
-  cycleRunning = true;
-
-  try {
-    for (const symbol of SYMBOLS) {
-      await runCycleForSymbol(symbol);
-    }
-  } finally {
-    cycleRunning = false;
-  }
-}
-
-void runCycle();
-setInterval(() => {
-  void runCycle();
-}, CYCLE_INTERVAL_MS);
+runObserver().catch((error: any) => {
+  logger.error({
+    log_type: "FATAL",
+    timestamp_utc: nowUtc(),
+    mode: MODE,
+    execute: EXECUTE,
+    block_reason: BLOCK_REASON,
+    error_message: error?.message || "Unknown fatal observer error",
+  });
+  closeLogStream();
+  process.exit(1);
+});
