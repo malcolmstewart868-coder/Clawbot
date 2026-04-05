@@ -527,28 +527,30 @@ function computeStructureSignals(
   const prev2Direction = candleDirection(prev2);
 
   const trendContinuationDetected =
-  displacementCount >= 1 &&
-  lastRangePct > avgRangePct10 * 1.05 &&
-  wickBodyRatio > 1.0;
+  impulseExpansionDetected &&
+  (
+    m15Aligned ||
+    m5Aligned ||
+    displacementCount >= 2
+  ) &&
+  lastRangePct >= avgRangePct10 * 0.98;
 
  const pullbackDetected =
-  !impulseExpansionDetected &&
-  displacementCount <= 1 &&
-  lastRangePct >= avgRangePct10 * 0.75 &&
-  lastRangePct <= avgRangePct10 * 1.15 &&
+  lastRangePct >= avgRangePct10 * 0.55 &&
+  lastRangePct <= avgRangePct10 * 1.25 &&
+  wickBodyRatio >= 0.30 &&
   (
     (m15Aligned && !m5Aligned) ||
-    (m15Aligned && wickBodyRatio >= 0.55) ||
-    (!m15Aligned && !m5Aligned && wickBodyRatio >= 0.9 && lastRangePct < avgRangePct10 * 1.05)
+    (m15Aligned && m5Aligned && lastRangePct < avgRangePct10 * 1.1) ||
+    (!m15Aligned && m5Aligned && wickBodyRatio >= 0.5)
   );
   
   const reversalAttemptDetected =
-  !impulseExpansionDetected &&
-  displacementCount <= 1 &&
   lastRangePct >= avgRangePct10 * 0.9 &&
-  wickBodyRatio >= 0.95 &&
+  wickBodyRatio >= 0.9 &&
   !m15Aligned &&
   !m5Aligned;
+  
   const compressionDetected =
   lastRangePct < avgRangePct10 * 1.05 &&
   wickBodyRatio < 1.6 &&
