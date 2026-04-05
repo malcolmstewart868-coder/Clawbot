@@ -1,4 +1,4 @@
-import axios from "axios";
+import dotenv from "dotenv";import axios from "axios";
 import fs from "fs";
 import path from "path";
 import pino from "pino";
@@ -27,6 +27,23 @@ type VolatilityLabel = "COMPRESSION" | "NORMAL" | "EXPANSION";
 
 type ReentryState = "ACTIVE" | "INACTIVE";
 
+type TruthState =
+  | "NO_TRADE"
+  | "STRUCTURE_FORMING"
+  | "STRUCTURE_CONFIRMED";
+
+type ScoutState =
+  | "SCOUT_IDLE"
+  | "SCOUT_ELIGIBLE"
+  | "SCOUT_ACTIVE"
+  | "SCOUT_LOCKED";
+
+type EntryClass = "NONE" | "PROBE" | "CORE";
+type ConfidenceClass = "NONE" | "EARLY_FORMATION" | "CONFIRMED";
+type CapitalSource = "NONE" | "SCOUT_RISK_POOL" | "CORE_CAPITAL";
+type PromotionState = "NONE" | "SCOUT_TO_CONFIRMED";
+type CoreDecision = "NO_CORE_TRADE" | "CORE_WAIT" | "CORE_ELIGIBLE";
+type ScoutDecision = "NO_SCOUT" | "SCOUT_WAIT" | "SCOUT_PROBE";
 interface Candle {
   openTime: number;
   open: number;
@@ -50,7 +67,46 @@ interface BiasResult {
   emaFast: number;
   emaSlow: number;
 }
+interface TruthClassification {
+  truthState: TruthState;
+  h1BiasPresent: boolean;
+  m15Emerging: boolean;
+  m5EarlySignal: boolean;
+  fullAlignmentConfirmed: boolean;
+}
 
+interface ScoutGuardrails {
+  scoutSizeFraction: number;
+  fixedStopRequired: boolean;
+  noAveragingDown: boolean;
+  maxScoutTradesPerSession: number;
+  maxScoutDailyLoss: number;
+  maxScoutLossStreak: number;
+  unstableBiasHoldThreshold: number;
+  aggressiveVolatilityLock: boolean;
+}
+
+interface ScoutRuntimeState {
+  sessionTrades: number;
+  dailyLoss: number;
+  lossStreak: number;
+  active: boolean;
+}
+
+interface ScoutAssessment {
+  scoutState: ScoutState;
+  entryClass: EntryClass;
+  confidenceClass: ConfidenceClass;
+  capitalSource: CapitalSource;
+  promotionState: PromotionState;
+  coreDecision: CoreDecision;
+  coreReason: string;
+  scoutDecision: ScoutDecision;
+  scoutReason: string;
+  scoutLocked: boolean;
+  scoutRiskPoolAvailable: boolean;
+  executionPermitted: boolean;
+}
 interface StructureSignals {
   trendContinuationDetected: boolean;
   pullbackDetected: boolean;
@@ -65,6 +121,8 @@ interface StructureSignals {
   avgRangePct10: number;
   wickBodyRatio: number;
   displacementCount: number;
+  m15Emerging?: boolean;
+  m5EarlySignal?: boolean;
 }
 
 interface MarketStateResult {
@@ -81,6 +139,16 @@ interface CycleLog {
   block_reason: "INSUFFICIENT_FUNDS";
   market_state: MarketState;
   observer_recommendation: ObserverRecommendation;
+  truth_state: TruthState;
+  scout_state: ScoutState;
+  entry_class: EntryClass;
+  confidence_class: ConfidenceClass;
+  capital_source: CapitalSource;
+  promotion_state: PromotionState;
+  core_decision: CoreDecision;
+  core_reason: string;
+  scout_decision: ScoutDecision;
+  scout_reason: string;
   bias: Bias;
   bias_strength: number;
   hold_count: number;
@@ -113,7 +181,6 @@ interface HeartbeatLog {
   polling_ms: number;
   guardrail_status: "ACTIVE";
 }
-
 interface ErrorLog {
   log_type: "ERROR";
   timestamp_utc: string;
@@ -123,6 +190,8 @@ interface ErrorLog {
   symbol?: string;
   error_message: string;
 }
+
+dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 
 const BINANCE_BASE_URL =
   process.env.BINANCE_BASE_URL?.trim() || "https://api.binance.com";
@@ -171,6 +240,55 @@ function closeLogStream(): void {
 }
 
 const biasMemory = new Map<string, BiasMemoryState>();
+
+const scoutRuntimeState = new Map<string, ScoutRuntimeState>();
+
+const TRUTH_STATE_ENABLED = process.env.TRUTH_STATE_ENABLED === "1";
+const SCOUT_LAYER_ENABLED = process.env.SCOUT_LAYER_ENABLED === "1";
+
+const SCOUT_SIZE_FRACTION = parseFloat(process.env.SCOUT_SIZE_FRACTION || "0.1");
+const SCOUT_FIXED_STOP_REQUIRED = process.env.SCOUT_FIXED_STOP_REQUIRED === "1";
+const SCOUT_NO_AVERAGING_DOWN = process.env.SCOUT_NO_AVERAGING_DOWN === "1";
+
+const SCOUT_MAX_TRADES_PER_SESSION = parseInt(process.env.SCOUT_MAX_TRADES_PER_SESSION || "5");
+const SCOUT_MAX_DAILY_LOSS = parseFloat(process.env.SCOUT_MAX_DAILY_LOSS || "100");
+const SCOUT_MAX_LOSS_STREAK = parseInt(process.env.SCOUT_MAX_LOSS_STREAK || "3");
+
+const SCOUT_UNSTABLE_BIAS_HOLD_THRESHOLD = parseInt(process.env.SCOUT_UNSTABLE_BIAS_HOLD_THRESHOLD || "5");
+const SCOUT_LOCK_AGGRESSIVE_VOLATILITY = process.env.SCOUT_LOCK_AGGRESSIVE_VOLATILITY === "1";
+
+const SCOUT_RISK_POOL_ENABLED = process.env.SCOUT_RISK_POOL_ENABLED === "1";
+
+// ===============================
+// SCOUT CONFIG (TERMINAL OUTPUT)
+// ===============================
+if (SCOUT_LAYER_ENABLED) {
+  console.log("SCOUT CONFIG:", {
+    enabled: SCOUT_LAYER_ENABLED,
+    size_fraction: SCOUT_SIZE_FRACTION,
+    fixed_stop_required: SCOUT_FIXED_STOP_REQUIRED,
+    no_averaging_down: SCOUT_NO_AVERAGING_DOWN,
+    max_trades_per_session: SCOUT_MAX_TRADES_PER_SESSION,
+    max_daily_loss: SCOUT_MAX_DAILY_LOSS,
+    max_loss_streak: SCOUT_MAX_LOSS_STREAK,
+    unstable_bias_hold_threshold: SCOUT_UNSTABLE_BIAS_HOLD_THRESHOLD,
+    lock_aggressive_volatility: SCOUT_LOCK_AGGRESSIVE_VOLATILITY,
+    risk_pool_enabled: SCOUT_RISK_POOL_ENABLED
+  });
+}
+
+const scoutGuardrails: ScoutGuardrails = {
+  scoutSizeFraction: SCOUT_SIZE_FRACTION,
+  fixedStopRequired: SCOUT_FIXED_STOP_REQUIRED,
+  noAveragingDown: SCOUT_NO_AVERAGING_DOWN,
+  maxScoutTradesPerSession: SCOUT_MAX_TRADES_PER_SESSION,
+  maxScoutDailyLoss: SCOUT_MAX_DAILY_LOSS,
+  maxScoutLossStreak: SCOUT_MAX_LOSS_STREAK,
+  unstableBiasHoldThreshold: SCOUT_UNSTABLE_BIAS_HOLD_THRESHOLD,
+  aggressiveVolatilityLock: SCOUT_LOCK_AGGRESSIVE_VOLATILITY,
+};
+
+console.log("SCOUT CONFIG:", scoutGuardrails);
 
 function nowUtc(): string {
   return new Date().toISOString();
@@ -526,26 +644,30 @@ function computeStructureSignals(
   const prevDirection = candleDirection(prev);
   const prev2Direction = candleDirection(prev2);
 
-  const trendContinuationDetected =
+ const trendContinuationDetected =
   impulseExpansionDetected &&
+  lastRangePct >= avgRangePct10 * 0.95 &&
+  wickBodyRatio >= 0.35 &&
   (
-    m15Aligned ||
-    m5Aligned ||
-    displacementCount >= 2
-  ) &&
-  lastRangePct >= avgRangePct10 * 0.98;
+    (m15Aligned && m5Aligned) ||
+    (m15Aligned && displacementCount >= 1) ||
+    (m5Aligned && displacementCount >= 2)
+  );
 
- const pullbackDetected =
-  lastRangePct >= avgRangePct10 * 0.55 &&
-  lastRangePct <= avgRangePct10 * 1.25 &&
-  wickBodyRatio >= 0.30 &&
+const pullbackDetected =
+  !trendContinuationDetected &&
+  lastRangePct >= avgRangePct10 * 0.6 &&
+  lastRangePct <= avgRangePct10 * 1.1 &&
+  wickBodyRatio >= 0.3 &&
   (
     (m15Aligned && !m5Aligned) ||
-    (m15Aligned && m5Aligned && lastRangePct < avgRangePct10 * 1.1) ||
+    (m15Aligned && m5Aligned && lastRangePct < avgRangePct10) ||
     (!m15Aligned && m5Aligned && wickBodyRatio >= 0.5)
   );
   
-  const reversalAttemptDetected =
+ const reversalAttemptDetected =
+  !trendContinuationDetected &&
+  !pullbackDetected &&
   lastRangePct >= avgRangePct10 * 0.9 &&
   wickBodyRatio >= 0.9 &&
   !m15Aligned &&
@@ -634,23 +756,257 @@ function mapRecommendation(marketState: MarketState): ObserverRecommendation {
   }
 }
 
+function getScoutRuntimeState(symbol: string): ScoutRuntimeState {
+  const existing = scoutRuntimeState.get(symbol);
+  if (existing) return existing;
+
+  const initial: ScoutRuntimeState = {
+    sessionTrades: 0,
+    dailyLoss: 0,
+    lossStreak: 0,
+    active: false,
+  };
+
+  scoutRuntimeState.set(symbol, initial);
+  return initial;
+}
+
+function classifyTruthState(
+  biasData: BiasResult,
+  signals: StructureSignals,
+  marketState: MarketState,
+): TruthClassification {
+  const h1BiasPresent = biasData.bias !== "NEUTRAL";
+
+  const m15Emerging =
+    signals.m15Aligned ||
+    signals.pullbackDetected ||
+    signals.reversalAttemptDetected ||
+    signals.trendContinuationDetected ||
+    signals.impulseExpansionDetected ||
+    signals.displacementCount >= 1;
+
+  const m5EarlySignal =
+    signals.m5Aligned ||
+    signals.pullbackDetected ||
+    signals.reversalAttemptDetected ||
+    signals.impulseExpansionDetected ||
+    signals.displacementCount >= 1 ||
+    signals.wickBodyRatio >= 0.35 ||
+    signals.lastRangePct >= signals.avgRangePct10 * 0.75;
+
+  const fullAlignmentConfirmed =
+    h1BiasPresent &&
+    signals.m15Aligned &&
+    signals.m5Aligned &&
+    (
+      marketState === "TREND_CONTINUATION" ||
+      signals.impulseExpansionDetected
+    );
+
+  const truthState: TruthState = !h1BiasPresent
+    ? "NO_TRADE"
+    : fullAlignmentConfirmed
+      ? "STRUCTURE_CONFIRMED"
+      : (
+          m15Emerging ||
+          m5EarlySignal ||
+          marketState === "PULLBACK" ||
+          marketState === "REVERSAL_ATTEMPT"
+        )
+        ? "STRUCTURE_FORMING"
+        : "NO_TRADE";
+
+  return {
+    truthState,
+    h1BiasPresent,
+    m15Emerging,
+    m5EarlySignal,
+    fullAlignmentConfirmed,
+  };
+}
+
+function assessScoutLayer(
+  symbol: string,
+  mode: RuntimeMode,
+  biasData: BiasResult,
+  marketState: MarketState,
+  truth: TruthClassification,
+  signals: StructureSignals,
+): ScoutAssessment {
+  const runtime = getScoutRuntimeState(symbol);
+
+     const unstableBias =
+    biasData.bias === "NEUTRAL" &&
+    biasData.holdCount < Math.max(1, scoutGuardrails.unstableBiasHoldThreshold - 1);
+
+  const aggressiveVolatility =
+    scoutGuardrails.aggressiveVolatilityLock &&
+    signals.volatilityLabel === "EXPANSION" &&
+    signals.displacementCount >= 4 &&
+    signals.wickBodyRatio >= 1.6;
+
+  const quotaBreached =
+    runtime.sessionTrades >= scoutGuardrails.maxScoutTradesPerSession;
+
+  const lossBreached =
+    runtime.dailyLoss >= scoutGuardrails.maxScoutDailyLoss ||
+    runtime.lossStreak >= scoutGuardrails.maxScoutLossStreak;
+
+  const scoutRiskPoolAvailable =
+    SCOUT_RISK_POOL_ENABLED && !quotaBreached && !lossBreached;
+
+  const executionPermitted =
+    mode !== "OBSERVE_ONLY" &&
+    mode !== "LIVE_OBSERVE_INSUFFICIENT_FUNDS" &&
+    EXECUTE;
+
+  const coreDecision: CoreDecision =
+    truth.truthState === "STRUCTURE_CONFIRMED"
+      ? "CORE_ELIGIBLE"
+      : truth.truthState === "STRUCTURE_FORMING"
+        ? "CORE_WAIT"
+        : "NO_CORE_TRADE";
+
+  const coreReason =
+    truth.truthState === "STRUCTURE_CONFIRMED"
+      ? "truth_state=STRUCTURE_CONFIRMED"
+      : truth.truthState === "STRUCTURE_FORMING"
+        ? "truth_state=STRUCTURE_FORMING core requires full confirmation"
+        : "truth_state=NO_TRADE";
+
+  const scoutLocked =
+    !SCOUT_LAYER_ENABLED ||
+    !SCOUT_RISK_POOL_ENABLED ||
+    quotaBreached ||
+    lossBreached ||
+    unstableBias ||
+    aggressiveVolatility;
+
+  if (scoutLocked) {
+    return {
+      scoutState: "SCOUT_LOCKED",
+      entryClass: "NONE",
+      confidenceClass: "NONE",
+      capitalSource: "NONE",
+      promotionState: "NONE",
+      coreDecision,
+      coreReason,
+      scoutDecision: "NO_SCOUT",
+      scoutReason: unstableBias
+        ? "scout locked: unstable bias regime"
+        : aggressiveVolatility
+          ? "scout locked: aggressive volatility regime"
+          : quotaBreached
+            ? "scout locked: session quota exhausted"
+            : lossBreached
+              ? "scout locked: loss limit breached"
+              : "scout locked: scout layer unavailable",
+      scoutLocked: true,
+      scoutRiskPoolAvailable,
+      executionPermitted,
+    };
+  }
+
+  if (runtime.active) {
+    return {
+      scoutState: "SCOUT_ACTIVE",
+      entryClass: "PROBE",
+      confidenceClass: "EARLY_FORMATION",
+      capitalSource: "SCOUT_RISK_POOL",
+      promotionState:
+        truth.truthState === "STRUCTURE_CONFIRMED"
+          ? "SCOUT_TO_CONFIRMED"
+          : "NONE",
+      coreDecision,
+      coreReason,
+      scoutDecision: "SCOUT_PROBE",
+      scoutReason: "scout probe position live",
+      scoutLocked: false,
+      scoutRiskPoolAvailable,
+      executionPermitted,
+    };
+  }
+
+      const acceptableMarketState =
+    marketState === "PULLBACK" ||
+    marketState === "REVERSAL_ATTEMPT" ||
+    marketState === "TREND_CONTINUATION" ||
+    marketState === "UNSTRUCTURED";
+
+  const scoutEligible =
+    truth.truthState === "STRUCTURE_FORMING" &&
+    truth.h1BiasPresent &&
+    scoutRiskPoolAvailable &&
+    scoutGuardrails.fixedStopRequired &&
+    scoutGuardrails.noAveragingDown &&
+    !aggressiveVolatility &&
+    (
+      truth.m15Emerging ||
+      signals.m15Aligned ||
+      signals.pullbackDetected ||
+      signals.reversalAttemptDetected ||
+      signals.trendContinuationDetected
+    ) &&
+    (
+      truth.m5EarlySignal ||
+      signals.m5Aligned ||
+      signals.impulseExpansionDetected ||
+      signals.wickBodyRatio >= 0.35 ||
+      signals.displacementCount >= 1 ||
+      signals.lastRangePct >= signals.avgRangePct10 * 0.75
+    ) &&
+    acceptableMarketState;
+
+  if (scoutEligible) {
+    return {
+      scoutState: "SCOUT_ELIGIBLE",
+      entryClass: "PROBE",
+      confidenceClass: "EARLY_FORMATION",
+      capitalSource: "SCOUT_RISK_POOL",
+      promotionState: "NONE",
+      coreDecision,
+      coreReason,
+      scoutDecision: "SCOUT_WAIT",
+      scoutReason:
+        "truth_state=STRUCTURE_FORMING scout eligible with bounded probe only",
+      scoutLocked: false,
+      scoutRiskPoolAvailable,
+      executionPermitted,
+    };
+  }
+
+  return {
+    scoutState: "SCOUT_IDLE",
+    entryClass: "NONE",
+    confidenceClass: "NONE",
+    capitalSource: "NONE",
+    promotionState: "NONE",
+    coreDecision,
+    coreReason,
+    scoutDecision: "NO_SCOUT",
+    scoutReason:
+      truth.truthState === "STRUCTURE_FORMING"
+        ? "forming structure but scout conditions incomplete"
+        : "no forming structure available for scout participation",
+    scoutLocked: false,
+    scoutRiskPoolAvailable,
+    executionPermitted,
+  };
+}
+
 async function runCycleForSymbol(symbol: string): Promise<void> {
   const candles = await fetchKlines(symbol);
-
-  if (candles.length < 30) {
-    throw new Error(`Not enough candles returned for ${symbol}`);
+  if (candles.length < KLINE_LIMIT) {
+    throw new Error(`Insufficient klines for ${symbol}: ${candles.length}`);
   }
 
   const closes = candles.map((c) => c.close);
-  const latest = lastOrThrow(candles, "runCycleForSymbol.candles");
-
   const biasData = classifyBias(symbol, closes);
   const marketStateResult = classifyMarketState(candles, biasData.bias);
-  const observerRecommendation = mapRecommendation(marketStateResult.marketState);
-
-  const reentryStabilization =
-    marketStateResult.signals.reentryState === "ACTIVE";
-  const cooldownActive = detectCooldown(candles);
+  const truth = classifyTruthState(biasData, marketStateResult.signals, marketStateResult.marketState);
+  const scout = assessScoutLayer(symbol, MODE, biasData, marketStateResult.marketState, truth, marketStateResult.signals);
+  const recommendation = mapRecommendation(marketStateResult.marketState);
 
   const cycleLog: CycleLog = {
     log_type: "CYCLE",
@@ -660,25 +1016,34 @@ async function runCycleForSymbol(symbol: string): Promise<void> {
     execute: EXECUTE,
     block_reason: BLOCK_REASON,
     market_state: marketStateResult.marketState,
-    observer_recommendation: observerRecommendation,
+    observer_recommendation: recommendation,
+    truth_state: truth.truthState,
+    scout_state: scout.scoutState,
+    entry_class: scout.entryClass,
+    confidence_class: scout.confidenceClass,
+    capital_source: scout.capitalSource,
+    promotion_state: scout.promotionState,
+    core_decision: scout.coreDecision,
+    core_reason: scout.coreReason,
+    scout_decision: scout.scoutDecision,
+    scout_reason: scout.scoutReason,
     bias: biasData.bias,
-    bias_strength: round(biasData.strength, 4),
+    bias_strength: biasData.strength,
     hold_count: biasData.holdCount,
-    price: latest.close,
-    ema_fast: round(biasData.emaFast, 4),
-    ema_slow: round(biasData.emaSlow, 4),
-    last_range_pct: round(marketStateResult.signals.lastRangePct, 6),
-    avg_range_pct_10: round(marketStateResult.signals.avgRangePct10, 6),
-    wick_body_ratio: round(marketStateResult.signals.wickBodyRatio, 4),
+    price: lastOrThrow(candles, "runCycleForSymbol.candles").close,
+    ema_fast: biasData.emaFast,
+    ema_slow: biasData.emaSlow,
+    last_range_pct: marketStateResult.signals.lastRangePct,
+    avg_range_pct_10: marketStateResult.signals.avgRangePct10,
+    wick_body_ratio: marketStateResult.signals.wickBodyRatio,
     displacement_count: marketStateResult.signals.displacementCount,
     volatility_label: marketStateResult.signals.volatilityLabel,
     reentry_state: marketStateResult.signals.reentryState,
-    reentry_stabilization: reentryStabilization,
-    cooldown_active: cooldownActive,
+    reentry_stabilization: detectReentryStabilization(candles),
+    cooldown_active: detectCooldown(candles),
     m15_aligned: marketStateResult.signals.m15Aligned,
     m5_aligned: marketStateResult.signals.m5Aligned,
-    impulse_expansion_detected:
-      marketStateResult.signals.impulseExpansionDetected,
+    impulse_expansion_detected: marketStateResult.signals.impulseExpansionDetected,
     compression_detected: marketStateResult.signals.compressionDetected,
     allow_trade: false,
     guardrail_status: "ACTIVE",

@@ -8,19 +8,19 @@
     "stop": "node scripts/stop-ports.mjs",
     "night": "ts-node --project ts/tsconfig.json ts/scripts/run-night-cycle.ts",
     "stress:summary": "ts-node --project ts/tsconfig.json scripts/summarize-blackbox.ts",
-
     "intelligence:governed": "ts-node --project ts/tsconfig.json src/intelligence/intelligenceGovernedPipeline.ts",
-
     "test": "vitest",
     "test:run": "vitest run"
-
-    
   },
-  "devDependencies": {
+    "devDependencies": {
+    "@types/node": "^25.5.0",
     "concurrently": "^9.0.0",
     "vitest": "^4.1.0"
   },
-  "dependencies": {
+    "dependencies": {
     "zod": "^4.3.6"
   }
+  
 }
+  
+

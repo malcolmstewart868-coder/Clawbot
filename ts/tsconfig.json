@@ -1,8 +1,10 @@
 {
   "compilerOptions": {
-    "module": "NodeNext",
+    "module": "Node16",
     "target": "ES2022",
-    "moduleResolution": "NodeNext",
+    "moduleResolution": "node16",
+    "types": ["node"],
+    "lib": ["ES2022", "DOM"],
     "sourceMap": true,
     "declaration": true,
     "declarationMap": true,
@@ -17,16 +19,19 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-
-"include": ["../src/**/*.ts"],
-
-"exclude": [
-  "node_modules",
-  "MirrorModel",
-  "ui",
-  "**/.history",
-  "**/.vscode",
-  "**/AppData/**",
-  "**/History/**"
-]
+  "include": [
+    "ts/**/*.ts",
+    "src/**/*.ts",
+    "scripts/**/*.ts",
+    "shared/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "MirrorModel",
+    "ui",
+    "**/.history",
+    "**/.vscode",
+    "**/AppData/**",
+    "**/History/**"
+  ]
 }
