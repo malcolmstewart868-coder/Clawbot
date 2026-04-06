@@ -836,7 +836,7 @@ function assessScoutLayer(
 ): ScoutAssessment {
   const runtime = getScoutRuntimeState(symbol);
 
-     const unstableBias =
+  const unstableBias =
     biasData.bias === "NEUTRAL" &&
     biasData.holdCount < Math.max(1, scoutGuardrails.unstableBiasHoldThreshold - 1);
 
@@ -908,27 +908,7 @@ function assessScoutLayer(
     };
   }
 
-  if (runtime.active) {
-    return {
-      scoutState: "SCOUT_ACTIVE",
-      entryClass: "PROBE",
-      confidenceClass: "EARLY_FORMATION",
-      capitalSource: "SCOUT_RISK_POOL",
-      promotionState:
-        truth.truthState === "STRUCTURE_CONFIRMED"
-          ? "SCOUT_TO_CONFIRMED"
-          : "NONE",
-      coreDecision,
-      coreReason,
-      scoutDecision: "SCOUT_PROBE",
-      scoutReason: "scout probe position live",
-      scoutLocked: false,
-      scoutRiskPoolAvailable,
-      executionPermitted,
-    };
-  }
-
-      const acceptableMarketState =
+  const acceptableMarketState =
     marketState === "PULLBACK" ||
     marketState === "REVERSAL_ATTEMPT" ||
     marketState === "TREND_CONTINUATION" ||
@@ -958,6 +938,47 @@ function assessScoutLayer(
     ) &&
     acceptableMarketState;
 
+  const activationReady =
+    scoutEligible &&
+    executionPermitted &&
+    !scoutLocked &&
+    scoutRiskPoolAvailable &&
+    truth.truthState === "STRUCTURE_FORMING" &&
+    truth.h1BiasPresent &&
+    (
+      truth.m15Emerging ||
+      signals.pullbackDetected ||
+      signals.reversalAttemptDetected
+    ) &&
+    truth.m5EarlySignal &&
+    (
+      signals.impulseExpansionDetected ||
+      signals.reversalAttemptDetected ||
+      signals.pullbackDetected
+    ) &&
+    acceptableMarketState;
+
+  if (runtime.active && activationReady) {
+    return {
+      scoutState: "SCOUT_ACTIVE",
+      entryClass: "PROBE",
+      confidenceClass: "EARLY_FORMATION",
+      capitalSource: "SCOUT_RISK_POOL",
+      promotionState:
+        truth.truthState === "STRUCTURE_CONFIRMED"
+          ? "SCOUT_TO_CONFIRMED"
+          : "NONE",
+      coreDecision,
+      coreReason,
+      scoutDecision: "SCOUT_PROBE",
+      scoutReason:
+        "truth_state=STRUCTURE_FORMING scout activation permitted with early signal confirmation",
+      scoutLocked: false,
+      scoutRiskPoolAvailable,
+      executionPermitted,
+    };
+  }
+
   if (scoutEligible) {
     return {
       scoutState: "SCOUT_ELIGIBLE",
@@ -969,7 +990,7 @@ function assessScoutLayer(
       coreReason,
       scoutDecision: "SCOUT_WAIT",
       scoutReason:
-        "truth_state=STRUCTURE_FORMING scout eligible with bounded probe only",
+        "truth_state=STRUCTURE_FORMING scout eligible while awaiting active runtime activation",
       scoutLocked: false,
       scoutRiskPoolAvailable,
       executionPermitted,
@@ -987,8 +1008,8 @@ function assessScoutLayer(
     scoutDecision: "NO_SCOUT",
     scoutReason:
       truth.truthState === "STRUCTURE_FORMING"
-        ? "forming structure but scout conditions incomplete"
-        : "no forming structure available for scout participation",
+        ? "structure forming detected but scout activation conditions not yet satisfied"
+        : "truth_state does not permit scout participation",
     scoutLocked: false,
     scoutRiskPoolAvailable,
     executionPermitted,
