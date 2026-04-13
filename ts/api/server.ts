@@ -101,6 +101,26 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, name: "clawbot-api" });
 });
 
+app.get("/api/status", (_req, res) => {
+  const telemetry = getStoredTelemetry();
+
+  const supervisor = telemetry ?? {
+    mode: "SHADOW",
+    authorityGranted: false,
+    observeOnly: true,
+    advisoryOnly: false,
+    supervisorNote: "Initialized",
+    timestampUtc: new Date().toISOString(),
+  };
+
+  res.json({
+    engine_state: "RUNNING",
+    mode: supervisor.mode ?? "SHADOW",
+    observe_lock: supervisor.observeOnly ?? true,
+    timestamp_utc: supervisor.timestampUtc ?? new Date().toISOString(),
+  });
+});
+
 app.get("/api/observer", (_req, res) => {
   const state = getObserverState();
   const telemetry = getStoredTelemetry();
