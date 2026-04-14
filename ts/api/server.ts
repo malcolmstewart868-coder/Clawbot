@@ -96,6 +96,57 @@ function stopRunner() {
   }, 2500);
 }
 
+type SseClient = {
+  id: number;
+  res: import("express").Response;
+};
+
+const sseClients: SseClient[] = [];
+
+function sendSseEvent(event: Record<string, unknown>) {
+  const payload = `data: ${JSON.stringify(event)}\n\n`;
+  for (const client of sseClients) {
+    client.res.write(payload);
+  }
+}
+
+function buildObserverEventPayload() {
+  const state = getObserverState?.() ?? getStoredTelemetry?.() ?? {};
+
+  const engine = (state as any).engine ?? {};
+  const calmstack = (state as any).calmstack ?? {};
+  const guardrail = (state as any).guardrail ?? {};
+  const position = (state as any).position ?? {};
+  const lastAction = (state as any).lastAction ?? {};
+  const supervisor = (state as any).supervisor ?? {
+    mode: "SHADOW",
+    authorityGranted: false,
+    observeOnly: true,
+    advisoryOnly: false,
+    supervisorNote: "Initialized",
+    timestampUtc: new Date().toISOString(),
+  };
+
+  return {
+    timestamp_utc: supervisor.timestampUtc ?? new Date().toISOString(),
+    mode: (state as any).intelligenceMode ?? supervisor.mode ?? "SHADOW",
+    symbol: position.symbol ?? "NO_SYMBOL",
+    market_state: calmstack.posture ?? "NO_STATE",
+    observer_recommendation: calmstack.mode ?? "NO_RECOMMENDATION",
+    finalAction: lastAction.type ?? "NO_ACTION",
+
+    state: {
+      engine,
+      calmstack,
+      guardrail,
+      position,
+      lastAction,
+      intelligenceMode: (state as any).intelligenceMode ?? supervisor.mode ?? "SHADOW",
+      supervisor,
+    },
+  };
+}
+
 // --- API routes (ALL under /api) ---
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, name: "clawbot-api" });
@@ -150,15 +201,34 @@ app.get("/api/events", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
   res.flushHeaders?.();
 
-  clients.add(res);
+  const clientId = Date.now();
 
-  // hello + recent logs
-  res.write(`data: ${JSON.stringify({ hello: true, last: logBuf.slice(-50) })}\n\n`);
+  const client = { id: clientId, res };
+  sseClients.push(client);
+
+  res.write(`data: ${JSON.stringify({
+    timestamp_utc: new Date().toISOString(),
+    mode: "CONNECTED",
+    symbol: "SYSTEM",
+    market_state: "SSE_READY",
+    observer_recommendation: "STREAM_OPEN",
+    finalAction: "connected",
+  })}\n\n`);
+
+  const interval = setInterval(() => {
+    const eventPayload = buildObserverEventPayload();
+    res.write(`data: ${JSON.stringify(eventPayload)}\n\n`);
+  }, 3000);
 
   req.on("close", () => {
-    clients.delete(res);
+    clearInterval(interval);
+    const index = sseClients.findIndex((c) => c.id === clientId);
+    if (index !== -1) sseClients.splice(index, 1);
+    res.end();
   });
 });
 
