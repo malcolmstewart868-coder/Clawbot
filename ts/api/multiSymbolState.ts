@@ -60,6 +60,160 @@ export type MultiSymbolObserverState = {
   timestampUtc: string;
 };
 
+export function ensureObservedSymbol(symbol: string): void {
+  if (!symbol) return;
+
+  if (!multiSymbolState.symbols[symbol]) {
+    multiSymbolState.symbols[symbol] = {
+      symbol,
+      engine: {
+        bot: "running",
+        trade: "watching",
+        session: "default",
+        running: true,
+      },
+      calmstack: {
+        posture: "watching",
+        mode: "OBSERVE",
+        allowEntry: false,
+        band: "UNAVAILABLE",
+        tradesTaken: 0,
+        skipReasons: [],
+      },
+      guardrail: {
+        allowTrade: false,
+        mode: "OBSERVE",
+        maxTrades: 2,
+        remainingTrades: 2,
+      },
+      position: {
+        open: false,
+        symbol,
+        side: "neutral",
+        entry: 0,
+        stop: 0,
+        mark: 0,
+      },
+      lastAction: {
+        type: "scan",
+        reason: "watching",
+      },
+      intelligence: {
+        bias_state: "neutral",
+        bias_strength: "UNAVAILABLE",
+        market_state: "watching",
+        truth_state: "Watching",
+        volatility_state: "UNAVAILABLE",
+        observer_recommendation: "OBSERVE",
+        reentry_state: "waiting",
+        structure_confirmed: false,
+      },
+      intelligenceMode: "SHADOW",
+      supervisor: fallbackSupervisor(),
+    };
+  }
+
+  multiSymbolState = {
+    ...multiSymbolState,
+    observedSymbols: Array.from(new Set([...multiSymbolState.observedSymbols, symbol])),
+    timestampUtc: new Date().toISOString(),
+  };
+}
+
+export function hydrateActiveSymbolFromEngine(
+  symbol: string,
+  engineState: any
+): void {
+  if (!symbol) return;
+
+  ensureObservedSymbol(symbol);
+
+  const current = multiSymbolState.symbols[symbol] ?? { symbol };
+
+  const engine = engineState?.engine ?? {};
+  const calmstack = engineState?.calmstack ?? {};
+  const guardrail = engineState?.guardrail ?? {};
+  const position = engineState?.position ?? {};
+  const lastAction = engineState?.lastAction ?? {};
+  const supervisor = engineState?.supervisor ?? fallbackSupervisor();
+
+  multiSymbolState = {
+    ...multiSymbolState,
+    activeSymbol: symbol,
+    timestampUtc: new Date().toISOString(),
+    observedSymbols: Array.from(new Set([...multiSymbolState.observedSymbols, symbol])),
+    symbols: {
+      ...multiSymbolState.symbols,
+      [symbol]: {
+        ...current,
+        symbol,
+        engine: {
+          ...current.engine,
+          ...engine,
+        },
+        calmstack: {
+          ...current.calmstack,
+          ...calmstack,
+        },
+        guardrail: {
+          ...current.guardrail,
+          ...guardrail,
+        },
+        position: {
+          ...current.position,
+          ...position,
+          symbol,
+        },
+        lastAction: {
+          ...current.lastAction,
+          ...lastAction,
+        },
+        intelligence: {
+          ...current.intelligence,
+          bias_state:
+            position?.side ??
+            current.intelligence?.bias_state ??
+            "UNAVAILABLE",
+          bias_strength:
+            current.intelligence?.bias_strength ?? "UNAVAILABLE",
+          market_state:
+            calmstack?.posture ??
+            current.intelligence?.market_state ??
+            "UNAVAILABLE",
+          truth_state:
+            supervisor?.supervisorNote ??
+            current.intelligence?.truth_state ??
+            "UNAVAILABLE",
+          volatility_state:
+            calmstack?.band ??
+            current.intelligence?.volatility_state ??
+            "UNAVAILABLE",
+          observer_recommendation:
+            calmstack?.mode ??
+            current.intelligence?.observer_recommendation ??
+            "UNAVAILABLE",
+          reentry_state:
+            engine?.trade ??
+            current.intelligence?.reentry_state ??
+            "UNAVAILABLE",
+          structure_confirmed:
+            position?.open ??
+            current.intelligence?.structure_confirmed ??
+            false,
+        },
+        intelligenceMode:
+          engineState?.intelligenceMode ??
+          current.intelligenceMode ??
+          "SHADOW",
+        supervisor: {
+          ...current.supervisor,
+          ...supervisor,
+        },
+      },
+    },
+  };
+}
+
 function fallbackSupervisor() {
   return {
     mode: "SHADOW",

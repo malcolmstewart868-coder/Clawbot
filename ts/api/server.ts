@@ -11,6 +11,7 @@ import {
   getLatestIntelligenceTelemetry as getStoredTelemetry,
   getAuthorityTimeline,
 } from "../shared/telemetry/intelligenceTelemetryStore";
+import { syncMultiSymbolStateFromEngine } from "./multiSymbolHydrator";
 
   const app = express();
     app.use(
@@ -114,7 +115,7 @@ function sendSseEvent(event: Record<string, unknown>) {
 }
 
 function buildObserverEventPayload() {
-  const multi = getMultiSymbolObserverState();
+  const multi = syncMultiSymbolStateFromEngine();
   const active = multi.symbols[multi.activeSymbol] ?? {};
   const calmstack = (active as any).calmstack ?? {};
   const position = (active as any).position ?? {};
@@ -175,7 +176,7 @@ app.get("/api/status", (_req, res) => {
 });
 
 app.get("/api/observer/multi", (_req, res) => {
-  const multi = getMultiSymbolObserverState();
+  const multi = syncMultiSymbolStateFromEngine();
 
   res.json({
     ok: true,
