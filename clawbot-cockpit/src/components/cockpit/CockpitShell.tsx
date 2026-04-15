@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchObserver, fetchStatus, startObserver, stopObserver } from "../../lib/api/observerApi";
+import { fetchObserverMulti, fetchStatus, setObserverActiveSymbol, startObserver, stopObserver } from "../../lib/api/observerApi";
 import { connectEventStream } from "../../lib/api/eventStream";
 import { mapEventLogItem, mapSnapshot } from "../../lib/mappers/cockpitMapper";
 import type { CockpitSnapshot, EventLogItem } from "../../lib/types/cockpit";
 import { TopStatusBar } from "./TopStatusBar";
 import { CommandStrip } from "./CommandStrip";
+import { SymbolStrip } from "./SymbolStrip";
 import { LiveChartPanel } from "../chart/LiveChartPanel";
 import { AuthorityPanel } from "../panels/AuthorityPanel";
 import { IntelligencePanel } from "../panels/IntelligencePanel";
@@ -16,12 +17,26 @@ export function CockpitShell() {
   const [events, setEvents] = useState<EventLogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
+  const [selectedSymbol, setSelectedSymbol] = useState<string>("");
 
   async function refresh() {
     try {
       setError("");
-      const [statusData, observerData] = await Promise.all([fetchStatus(), fetchObserver()]);
-      setSnapshot(mapSnapshot(statusData, observerData));
+      const [statusData, observerData] = await Promise.all([
+        fetchStatus(),
+        fetchObserverMulti(),
+        ]);
+      const mapped = mapSnapshot(statusData, observerData);
+      setSnapshot(mapped);
+
+      if (!selectedSymbol) {
+        const firstSymbol =
+          mapped.market?.symbol ??
+          mapped.observedSymbols?.find((s) => s.active)?.symbol ??
+          mapped.observedSymbols?.[0]?.symbol ??
+          "";
+        if (firstSymbol) setSelectedSymbol(firstSymbol);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to refresh cockpit");
     } finally {
@@ -29,16 +44,71 @@ export function CockpitShell() {
     }
   }
 
+ async function handleSelectSymbol(symbol: string) {
+  try {
+    setError("");
+
+    await setObserverActiveSymbol(symbol);
+
+    // Force backend truth sync
+    await refresh();
+
+    // Only set after backend confirms
+    setSelectedSymbol(symbol);
+
+  } catch (err) {
+    setError(err instanceof Error ? err.message : "Failed to switch active symbol");
+  }
+ }
+
   useEffect(() => {
-    refresh();
+    void refresh();
+
     const close = connectEventStream((data) => {
       const item = mapEventLogItem(data);
       setEvents((prev) => [item, ...prev].slice(0, 50));
     });
+
     return close;
   }, []);
 
-  const title = useMemo(() => snapshot.market?.symbol ?? "NO_SYMBOL", [snapshot.market?.symbol]);
+  const observedSymbols = useMemo(
+    () => snapshot.observedSymbols ?? [],
+    [snapshot.observedSymbols]
+  );
+
+  const activeSymbol = useMemo(() => {
+    return selectedSymbol || snapshot.market?.symbol || "NO_SYMBOL";
+  }, [selectedSymbol, snapshot.market?.symbol]);
+
+  const selectedSymbolState = useMemo(() => {
+    return observedSymbols.find((s) => s.symbol === activeSymbol);
+  }, [observedSymbols, activeSymbol]);
+
+  const chartMarket = useMemo(() => {
+    if (!selectedSymbolState) return snapshot.market;
+
+    return {
+      ...snapshot.market,
+      symbol: selectedSymbolState.symbol,
+      feed_status: selectedSymbolState.feed_status ?? snapshot.market?.feed_status,
+    };
+  }, [snapshot.market, selectedSymbolState]);
+
+  const chartIntelligence = useMemo(() => {
+    if (!selectedSymbolState) return snapshot.intelligence;
+
+    return {
+      ...snapshot.intelligence,
+      bias_state: selectedSymbolState.bias_state ?? snapshot.intelligence?.bias_state,
+      market_state: selectedSymbolState.market_state ?? snapshot.intelligence?.market_state,
+      volatility_state:
+        selectedSymbolState.volatility_state ?? snapshot.intelligence?.volatility_state,
+      observer_recommendation:
+        selectedSymbolState.observer_recommendation ??
+        snapshot.intelligence?.observer_recommendation,
+    };
+  }, [snapshot.intelligence, selectedSymbolState]);
 
   return (
     <div style={{ minHeight: "100vh", background: "#0f172a", color: "#e2e8f0", padding: 16 }}>
@@ -49,14 +119,16 @@ export function CockpitShell() {
         </p>
 
         <TopStatusBar runtime={snapshot.runtime} />
-        <CommandStrip
-          onStart={startObserver}
-          onStop={stopObserver}
-          onRefresh={refresh}
-        />
+        <CommandStrip onStart={startObserver} onStop={stopObserver} onRefresh={refresh} />
 
         {loading && <p>Loading cockpit...</p>}
         {error && <p style={{ color: "#fca5a5" }}>{error}</p>}
+
+        <SymbolStrip
+          symbols={observedSymbols}
+           activeSymbol={activeSymbol}
+          onSelectSymbol={handleSelectSymbol}
+        />
 
         <div
           style={{
@@ -67,16 +139,20 @@ export function CockpitShell() {
           }}
         >
           <div>
-            <LiveChartPanel market={snapshot.market} intelligence={snapshot.intelligence} title={title} />
+            <LiveChartPanel
+              market={chartMarket}
+              intelligence={chartIntelligence}
+              title={activeSymbol}
+            />
             <EventStreamPanel events={events} />
           </div>
 
           <div>
             <AuthorityPanel runtime={snapshot.runtime} />
-            <IntelligencePanel intelligence={snapshot.intelligence} />
+            <IntelligencePanel intelligence={chartIntelligence} />
             <SessionSummaryPanel
               runtime={snapshot.runtime}
-              market={snapshot.market}
+              market={chartMarket}
               positions={snapshot.positions}
             />
           </div>

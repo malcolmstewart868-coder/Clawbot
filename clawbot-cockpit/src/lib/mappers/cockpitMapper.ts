@@ -1,4 +1,4 @@
-import type { CockpitSnapshot, EventLogItem } from "../types/cockpit";
+import type { CockpitSnapshot, EventLogItem, ObservedSymbolState } from "../types/cockpit";
 
 function asRecord(value: unknown): Record<string, any> {
   if (value && typeof value === "object") return value as Record<string, any>;
@@ -7,6 +7,38 @@ function asRecord(value: unknown): Record<string, any> {
 
 function firstDefined<T>(...values: T[]): T | undefined {
   return values.find((value) => value !== undefined && value !== null);
+}
+
+function buildObservedSymbols(state: Record<string, any>, status: Record<string, any>, observer: Record<string, any>): ObservedSymbolState[] {
+  const activeSymbol = firstDefined(
+    observer.activeSymbol,
+    state.position?.symbol,
+    status.symbol,
+    "NO_SYMBOL"
+  ) as string;
+
+  const observedSymbols = Array.isArray(observer.observedSymbols)
+    ? observer.observedSymbols
+    : ["EURUSDT", "BTCUSDT"];
+
+  const symbolsMap = asRecord(observer.symbols);
+
+  return observedSymbols.map((symbol: string) => {
+    const entry = asRecord(symbolsMap[symbol]);
+    const calmstack = asRecord(entry.calmstack);
+    const position = asRecord(entry.position);
+    const engine = asRecord(entry.engine);
+
+    return {
+      symbol,
+      bias_state: firstDefined(position.side, symbol === activeSymbol ? "UNAVAILABLE" : "WATCHING"),
+      market_state: firstDefined(calmstack.posture, symbol === activeSymbol ? "UNAVAILABLE" : "WATCHING"),
+      volatility_state: firstDefined(calmstack.band, "UNAVAILABLE"),
+      observer_recommendation: firstDefined(calmstack.mode, symbol === activeSymbol ? "UNAVAILABLE" : "OBSERVE"),
+      feed_status: engine.running ? "LIVE" : "STOPPED",
+      active: symbol === activeSymbol,
+    };
+  });
 }
 
 export function mapSnapshot(statusData: unknown, observerData: unknown): CockpitSnapshot {
@@ -31,7 +63,6 @@ export function mapSnapshot(statusData: unknown, observerData: unknown): Cockpit
         supervisor.timestampUtc,
         new Date().toISOString()
       ),
-
       allowTrade: firstDefined(guardrail.allowTrade, supervisor.authorityGranted, false),
       finalAction: firstDefined(lastAction.type, "UNAVAILABLE"),
       block_reason: supervisor.observeOnly ? "OBSERVE_ONLY" : "UNAVAILABLE",
@@ -68,75 +99,53 @@ export function mapSnapshot(statusData: unknown, observerData: unknown): Cockpit
       open_count: position.open ? 1 : 0,
       floating_pnl: "UNAVAILABLE",
     },
+
+    observedSymbols: buildObservedSymbols(state, status, observer),
   };
 }
 
 export function mapEventLogItem(data: unknown): EventLogItem {
   const row = asRecord(data);
-
   const state = asRecord(row.state);
-  const engine = asRecord(row.engine);
-  const calmstack = asRecord(row.calmstack);
-  const position = asRecord(row.position);
-  const lastAction = asRecord(row.lastAction);
-  const supervisor = asRecord(row.supervisor);
-
-  const nestedState = asRecord(state);
-  const nestedEngine = asRecord(nestedState.engine);
-  const nestedCalmstack = asRecord(nestedState.calmstack);
-  const nestedPosition = asRecord(nestedState.position);
-  const nestedLastAction = asRecord(nestedState.lastAction);
-  const nestedSupervisor = asRecord(nestedState.supervisor);
+  const calmstack = asRecord(state.calmstack);
+  const position = asRecord(state.position);
+  const lastAction = asRecord(state.lastAction);
+  const supervisor = asRecord(state.supervisor);
 
   return {
     timestamp_utc: firstDefined(
       row.timestamp_utc,
       row.timestampUtc,
-      row.ts,
-      state.timestamp_utc,
-      nestedSupervisor.timestampUtc,
       supervisor.timestampUtc,
       "NO_TIME"
     ) as string,
-
     mode: firstDefined(
       row.mode,
       row.intelligenceMode,
       state.intelligenceMode,
-      nestedSupervisor.mode,
       supervisor.mode,
       "NO_MODE"
     ) as string,
-
     symbol: firstDefined(
       row.symbol,
       position.symbol,
-      state.symbol,
-      nestedPosition.symbol,
       "NO_SYMBOL"
     ) as string,
-
     market_state: firstDefined(
       row.market_state,
       calmstack.posture,
-      nestedCalmstack.posture,
       "NO_STATE"
     ) as string,
-
     observer_recommendation: firstDefined(
       row.observer_recommendation,
       calmstack.mode,
-      nestedCalmstack.mode,
       "NO_RECOMMENDATION"
     ) as string,
-
     finalAction: firstDefined(
       row.finalAction,
       lastAction.type,
-      nestedLastAction.type,
       "NO_ACTION"
     ) as string,
-
     raw: data,
   };
 }

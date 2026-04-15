@@ -1,6 +1,9 @@
 import { getObserverState, resetObserverState, setObserverRunning } from "./observerState";
 // ts/api/server.ts
-
+import {
+  getMultiSymbolObserverState,
+  setActiveSymbol,
+} from "./multiSymbolState";
 import express, { type Response } from "express";
 import cors from "cors";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -111,14 +114,12 @@ function sendSseEvent(event: Record<string, unknown>) {
 }
 
 function buildObserverEventPayload() {
-  const state = getObserverState?.() ?? getStoredTelemetry?.() ?? {};
-
-  const engine = (state as any).engine ?? {};
-  const calmstack = (state as any).calmstack ?? {};
-  const guardrail = (state as any).guardrail ?? {};
-  const position = (state as any).position ?? {};
-  const lastAction = (state as any).lastAction ?? {};
-  const supervisor = (state as any).supervisor ?? {
+  const multi = getMultiSymbolObserverState();
+  const active = multi.symbols[multi.activeSymbol] ?? {};
+  const calmstack = (active as any).calmstack ?? {};
+  const position = (active as any).position ?? {};
+  const lastAction = (active as any).lastAction ?? {};
+  const supervisor = (active as any).supervisor ?? {
     mode: "SHADOW",
     authorityGranted: false,
     observeOnly: true,
@@ -129,21 +130,18 @@ function buildObserverEventPayload() {
 
   return {
     timestamp_utc: supervisor.timestampUtc ?? new Date().toISOString(),
-    mode: (state as any).intelligenceMode ?? supervisor.mode ?? "SHADOW",
-    symbol: position.symbol ?? "NO_SYMBOL",
+    mode: (active as any).intelligenceMode ?? supervisor.mode ?? "SHADOW",
+    symbol: position.symbol ?? multi.activeSymbol ?? "NO_SYMBOL",
     market_state: calmstack.posture ?? "NO_STATE",
     observer_recommendation: calmstack.mode ?? "NO_RECOMMENDATION",
     finalAction: lastAction.type ?? "NO_ACTION",
 
-    state: {
-      engine,
-      calmstack,
-      guardrail,
-      position,
-      lastAction,
-      intelligenceMode: (state as any).intelligenceMode ?? supervisor.mode ?? "SHADOW",
-      supervisor,
-    },
+    activeSymbol: multi.activeSymbol,
+    observedSymbols: multi.observedSymbols,
+
+    symbols: multi.symbols,
+
+    state: active,
   };
 }
 
@@ -169,6 +167,14 @@ app.get("/api/status", (_req, res) => {
     mode: supervisor.mode ?? "SHADOW",
     observe_lock: supervisor.observeOnly ?? true,
     timestamp_utc: supervisor.timestampUtc ?? new Date().toISOString(),
+  });
+});
+
+app.get("/api/observer/multi", (_req, res) => {
+  const multi = getMultiSymbolObserverState();
+  res.json({
+    ok: true,
+    ...multi,
   });
 });
 
@@ -229,6 +235,21 @@ app.get("/api/events", (req, res) => {
     const index = sseClients.findIndex((c) => c.id === clientId);
     if (index !== -1) sseClients.splice(index, 1);
     res.end();
+  });
+});
+
+app.post("/api/observer/active-symbol", express.json(), (req, res) => {
+  const symbol = String(req.body?.symbol ?? "").toUpperCase().trim();
+
+  if (!symbol) {
+    return res.status(400).json({ ok: false, error: "symbol is required" });
+  }
+
+  setActiveSymbol(symbol);
+
+  return res.json({
+    ok: true,
+    activeSymbol: symbol,
   });
 });
 

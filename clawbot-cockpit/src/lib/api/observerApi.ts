@@ -24,4 +24,20 @@ export async function stopObserver(): Promise<void> {
   if (!res.ok) throw new Error(`Stop request failed: ${res.status}`);
 }
 
+export async function fetchObserverMulti(): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/api/observer/multi`);
+  if (!res.ok) throw new Error(`Observer multi request failed: ${res.status}`);
+  return res.json();
+}
+
+export async function setObserverActiveSymbol(symbol: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/observer/active-symbol`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ symbol }),
+  });
+
+  if (!res.ok) throw new Error(`Set active symbol failed: ${res.status}`);
+}
+
 export { API_BASE };

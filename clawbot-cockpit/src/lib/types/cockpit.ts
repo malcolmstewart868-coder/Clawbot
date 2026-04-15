@@ -7,10 +7,10 @@ export type RuntimeState = {
   finalAction?: string;
   block_reason?: string;
   guardrail_status?: string;
-  safeMode?: boolean;
+  safeMode?: boolean | string;
   execute?: boolean;
-  session_trade_cap?: number;
-  remaining_trades?: number;
+  session_trade_cap?: number | string;
+  remaining_trades?: number | string;
 };
 
 export type IntelligenceState = {
@@ -40,11 +40,22 @@ export type PositionState = {
   floating_pnl?: number | string;
 };
 
+export type ObservedSymbolState = {
+  symbol: string;
+  bias_state?: string;
+  market_state?: string;
+  volatility_state?: string;
+  observer_recommendation?: string;
+  feed_status?: string;
+  active?: boolean;
+};
+
 export type CockpitSnapshot = {
   runtime?: RuntimeState;
   intelligence?: IntelligenceState;
   market?: MarketState;
   positions?: PositionState;
+  observedSymbols?: ObservedSymbolState[];
 };
 
 export type EventLogItem = {
