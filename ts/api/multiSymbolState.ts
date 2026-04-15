@@ -32,6 +32,16 @@ export type SymbolIntelState = {
     type?: string;
     reason?: string;
   };
+  intelligence?: {
+    bias_state?: string;
+    bias_strength?: number | string;
+    market_state?: string;
+    truth_state?: string;
+    volatility_state?: string;
+    observer_recommendation?: string;
+    reentry_state?: string;
+    structure_confirmed?: boolean;
+  };
   intelligenceMode?: string;
   supervisor?: {
     mode?: string;
@@ -50,14 +60,16 @@ export type MultiSymbolObserverState = {
   timestampUtc: string;
 };
 
-const fallbackSupervisor = () => ({
-  mode: "SHADOW",
-  authorityGranted: false,
-  observeOnly: true,
-  advisoryOnly: false,
-  supervisorNote: "Initialized",
-  timestampUtc: new Date().toISOString(),
-});
+function fallbackSupervisor() {
+  return {
+    mode: "SHADOW",
+    authorityGranted: false,
+    observeOnly: true,
+    advisoryOnly: false,
+    supervisorNote: "Initialized",
+    timestampUtc: new Date().toISOString(),
+  };
+}
 
 let multiSymbolState: MultiSymbolObserverState = {
   activeSymbol: "EURUSDT",
@@ -97,6 +109,16 @@ let multiSymbolState: MultiSymbolObserverState = {
         type: "be",
         reason: "be",
       },
+      intelligence: {
+        bias_state: "long",
+        bias_strength: "UNAVAILABLE",
+        market_state: "normal",
+        truth_state: "Initialized",
+        volatility_state: "high",
+        observer_recommendation: "MANAGE",
+        reentry_state: "managing",
+        structure_confirmed: true,
+      },
       intelligenceMode: "SHADOW",
       supervisor: fallbackSupervisor(),
     },
@@ -109,12 +131,12 @@ let multiSymbolState: MultiSymbolObserverState = {
         running: true,
       },
       calmstack: {
-        posture: "watching",
+        posture: "compression",
         mode: "OBSERVE",
         allowEntry: false,
         band: "medium",
         tradesTaken: 0,
-        skipReasons: [],
+        skipReasons: ["waiting_for_structure"],
       },
       guardrail: {
         allowTrade: false,
@@ -133,6 +155,16 @@ let multiSymbolState: MultiSymbolObserverState = {
       lastAction: {
         type: "scan",
         reason: "watching",
+      },
+      intelligence: {
+        bias_state: "neutral",
+        bias_strength: "UNAVAILABLE",
+        market_state: "compression",
+        truth_state: "Watching",
+        volatility_state: "medium",
+        observer_recommendation: "OBSERVE",
+        reentry_state: "waiting",
+        structure_confirmed: false,
       },
       intelligenceMode: "SHADOW",
       supervisor: fallbackSupervisor(),

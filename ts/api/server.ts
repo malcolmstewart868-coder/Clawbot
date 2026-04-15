@@ -132,15 +132,19 @@ function buildObserverEventPayload() {
     timestamp_utc: supervisor.timestampUtc ?? new Date().toISOString(),
     mode: (active as any).intelligenceMode ?? supervisor.mode ?? "SHADOW",
     symbol: position.symbol ?? multi.activeSymbol ?? "NO_SYMBOL",
-    market_state: calmstack.posture ?? "NO_STATE",
-    observer_recommendation: calmstack.mode ?? "NO_RECOMMENDATION",
+    market_state:
+      (active as any).intelligence?.market_state ??
+      calmstack.posture ??
+      "NO_STATE",
+    observer_recommendation:
+      (active as any).intelligence?.observer_recommendation ??
+      calmstack.mode ??
+      "NO_RECOMMENDATION",
     finalAction: lastAction.type ?? "NO_ACTION",
 
     activeSymbol: multi.activeSymbol,
     observedSymbols: multi.observedSymbols,
-
     symbols: multi.symbols,
-
     state: active,
   };
 }
@@ -172,9 +176,25 @@ app.get("/api/status", (_req, res) => {
 
 app.get("/api/observer/multi", (_req, res) => {
   const multi = getMultiSymbolObserverState();
+
   res.json({
     ok: true,
     ...multi,
+  });
+});
+
+app.post("/api/observer/active-symbol", express.json(), (req, res) => {
+  const symbol = String(req.body?.symbol ?? "").toUpperCase().trim();
+
+  if (!symbol) {
+    return res.status(400).json({ ok: false, error: "symbol is required" });
+  }
+
+  setActiveSymbol(symbol);
+
+  return res.json({
+    ok: true,
+    activeSymbol: symbol,
   });
 });
 
