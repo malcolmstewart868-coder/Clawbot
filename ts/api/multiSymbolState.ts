@@ -364,3 +364,15 @@ export function setActiveSymbol(symbol: string): void {
     observedSymbols: Array.from(new Set([...multiSymbolState.observedSymbols, symbol])),
   };
 }
+
+  async function selectSymbol(symbol: string) {
+  setActiveSymbol(symbol); // existing UI state
+
+  await fetch("http://localhost:3001/api/observer/active-symbol", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ symbol }),
+  });
+}

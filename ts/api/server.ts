@@ -1,9 +1,8 @@
 import { getObserverState, resetObserverState, setObserverRunning } from "./observerState";
 // ts/api/server.ts
-import {
-  getMultiSymbolObserverState,
-  setActiveSymbol,
-} from "./multiSymbolState";
+import { setActiveSymbol } from "./multiSymbolState";
+
+
 import express, { type Response } from "express";
 import cors from "cors";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -12,6 +11,7 @@ import {
   getAuthorityTimeline,
 } from "../shared/telemetry/intelligenceTelemetryStore";
 import { syncMultiSymbolStateFromEngine } from "./multiSymbolHydrator";
+import { runParallelIntelligenceCycle } from "./parallelIntelligenceEngine";
 
   const app = express();
     app.use(
@@ -114,9 +114,12 @@ function sendSseEvent(event: Record<string, unknown>) {
   }
 }
 
-function buildObserverEventPayload() {
-  const multi = syncMultiSymbolStateFromEngine();
-  const active = multi.symbols[multi.activeSymbol] ?? {};
+async function buildObserverEventPayload() {
+  syncMultiSymbolStateFromEngine();
+  const multi = await runParallelIntelligenceCycle();
+
+  const activeSymbol = multi.activeSymbol;
+  const active = multi.symbols[activeSymbol];
   const calmstack = (active as any).calmstack ?? {};
   const position = (active as any).position ?? {};
   const lastAction = (active as any).lastAction ?? {};
@@ -175,8 +178,9 @@ app.get("/api/status", (_req, res) => {
   });
 });
 
-app.get("/api/observer/multi", (_req, res) => {
-  const multi = syncMultiSymbolStateFromEngine();
+app.get("/api/observer/multi", async (_req, res) => {
+  syncMultiSymbolStateFromEngine();
+  const multi = await runParallelIntelligenceCycle();
 
   res.json({
     ok: true,
@@ -199,7 +203,19 @@ app.post("/api/observer/active-symbol", express.json(), (req, res) => {
   });
 });
 
-app.get("/api/observer", (_req, res) => {
+app.get("/api/observer/symbols", async (_req, res) => {
+  syncMultiSymbolStateFromEngine();
+  const multi = await runParallelIntelligenceCycle();
+
+  res.json({
+    ok: true,
+    activeSymbol: multi.activeSymbol,
+    observedSymbols: multi.observedSymbols,
+    symbols: multi.symbols,
+  });
+});
+
+app.get("/api/observer", async (_req, res) => {
   const state = getObserverState();
   const telemetry = getStoredTelemetry();
   const authorityTimeline = getAuthorityTimeline();
@@ -246,8 +262,8 @@ app.get("/api/events", (req, res) => {
     finalAction: "connected",
   })}\n\n`);
 
-  const interval = setInterval(() => {
-    const eventPayload = buildObserverEventPayload();
+  const interval = setInterval(async () => {
+    const eventPayload = await buildObserverEventPayload();
     res.write(`data: ${JSON.stringify(eventPayload)}\n\n`);
   }, 3000);
 
