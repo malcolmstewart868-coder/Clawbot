@@ -2,6 +2,7 @@
   import { makePaperAdapter } from "../adapters/paperAdapter";
   import { makeBinanceAdapter } from "../adapters/binanceAdapter";
   import type { ExchangeAdapter } from "../adapters/exchange";
+  import { normalizeTelemetryEvent, publishTelemetry } from "../api/telemetry";
 
   import { createIntel } from "../core/intel/index";
 
@@ -36,15 +37,19 @@
   return actions.filter(a => a.reason === "be" || a.reason === "be_plus");
   }
 
-  function emit(event: string, payload: any = {}) {
+ function emit(event: string, payload: Record<string, unknown> = {}) {
+  const normalized = normalizeTelemetryEvent(event, payload);
+
   console.log(
     JSON.stringify({
       ts: Date.now(),
       event,
       ...payload,
-    })
+    }),
   );
-  }
+
+  publishTelemetry(normalized);
+}
 
   function sleep(ms: number) {
   return new Promise<void>((res) => setTimeout(res, ms));

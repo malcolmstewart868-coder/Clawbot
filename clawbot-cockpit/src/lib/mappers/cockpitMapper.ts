@@ -28,39 +28,51 @@ function buildObservedSymbols(
   const symbolsMap = asRecord(observer.symbols);
 
   return observedSymbols.map((symbol: string) => {
-    const entry = asRecord(symbolsMap[symbol]);
-    const engine = asRecord(entry.engine);
-    const calmstack = asRecord(entry.calmstack);
-    const position = asRecord(entry.position);
-    const intelligence = asRecord(entry.intelligence);
+  const entry = asRecord(symbolsMap[symbol]);
+  const engine = asRecord(entry.engine);
+  const calmstack = asRecord(entry.calmstack);
+  const position = asRecord(entry.position);
+  const intelligence = asRecord(entry.intelligence);
+  const guardrail = asRecord(entry.guardrail);
+  const lastAction = asRecord(entry.lastAction);
+  const supervisor = asRecord(entry.supervisor);
 
-    return {
-      symbol,
-      bias_state: firstDefined(
-        intelligence.bias_state,
-        position.side,
-        symbol === activeSymbol ? "UNAVAILABLE" : "WATCHING"
-      ),
-      market_state: firstDefined(
-        intelligence.market_state,
-        calmstack.posture,
-        symbol === activeSymbol ? "UNAVAILABLE" : "WATCHING"
-      ),
-      volatility_state: firstDefined(
-        intelligence.volatility_state,
-        calmstack.band,
-        "UNAVAILABLE"
-      ),
-      observer_recommendation: firstDefined(
-        intelligence.observer_recommendation,
-        calmstack.mode,
-        symbol === activeSymbol ? "UNAVAILABLE" : "OBSERVE"
-      ),
-      feed_status: engine.running ? "LIVE" : "STOPPED",
-      active: symbol === activeSymbol,
+  return {
+    symbol,
+    bias_state: firstDefined(
+      intelligence.bias_state,
+      position.side,
+      symbol === activeSymbol ? "UNAVAILABLE" : "WATCHING"
+    ),
+    market_state: firstDefined(
+      intelligence.market_state,
+      calmstack.posture,
+      symbol === activeSymbol ? "UNAVAILABLE" : "WATCHING"
+    ),
+    volatility_state: firstDefined(
+      intelligence.volatility_state,
+      calmstack.band,
+      "UNAVAILABLE"
+    ),
+    observer_recommendation: firstDefined(
+      intelligence.observer_recommendation,
+      calmstack.mode,
+      symbol === activeSymbol ? "UNAVAILABLE" : "OBSERVE"
+    ),
+    feed_status: engine.running ? "LIVE" : "STOPPED",
+    active: symbol === activeSymbol,
+
+    price: firstDefined(position.mark, "UNAVAILABLE"),
+    allowTrade: firstDefined(guardrail.allowTrade, supervisor.authorityGranted, false),
+    finalAction: firstDefined(lastAction.type, "UNAVAILABLE"),
+    guardrail_status: firstDefined(guardrail.mode, "UNAVAILABLE"),
+    safeMode: firstDefined(calmstack.mode, "UNAVAILABLE"),
+    execute: firstDefined(supervisor.authorityGranted, false),
+    open_positions: position.open ? 1 : 0,
+    remaining_trades: firstDefined(guardrail.remainingTrades, "UNAVAILABLE"),
     };
-  });
-}
+   });
+  }
 
 export function mapSnapshot(statusData: unknown, observerData: unknown): CockpitSnapshot {
   const status = asRecord(statusData);

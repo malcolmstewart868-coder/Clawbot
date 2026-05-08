@@ -114,6 +114,37 @@ function sendSseEvent(event: Record<string, unknown>) {
   }
 }
 
+function toStreamEvent(payload: any): {
+  timestamp_utc: string;
+  symbol: string;
+  mode: string;
+  market_state: string;
+  observer_recommendation: string;
+  finalAction: string;
+  source: "system" | "observer" | "runtime";
+} {
+  return {
+    timestamp_utc: String(
+      payload?.timestamp_utc ??
+      payload?.timestampUtc ??
+      new Date().toISOString()
+    ),
+    symbol: String(payload?.symbol ?? "NO_SYMBOL").toUpperCase(),
+    mode: String(payload?.mode ?? "UNKNOWN").toUpperCase(),
+    market_state: String(payload?.market_state ?? "NO_STATE"),
+    observer_recommendation: String(
+      payload?.observer_recommendation ?? "NO_RECOMMENDATION"
+    ),
+    finalAction: String(payload?.finalAction ?? "NO_ACTION"),
+    source:
+      payload?.source === "system" ||
+      payload?.source === "observer" ||
+      payload?.source === "runtime"
+        ? payload.source
+        : "observer",
+  };
+}
+
 async function buildObserverEventPayload() {
   syncMultiSymbolStateFromEngine();
   const multi = await runParallelIntelligenceCycle();
@@ -215,32 +246,34 @@ app.get("/api/observer/symbols", async (_req, res) => {
   });
 });
 
-app.get("/api/observer", async (_req, res) => {
+app.get("/api/observer", (_req, res) => {
   const state = getObserverState();
   const telemetry = getStoredTelemetry();
   const authorityTimeline = getAuthorityTimeline();
 
-          const supervisor= telemetry ?? {
-            mode: "SHADOW",
-            authorityGranted: false,
-            observeOnly: true,
-            advisoryOnly: false,
-            supervisorNote: "Initialized",
-            timestampUtc: new Date().toISOString(),
-          };
-       res.json({
-        ok: true,
-        state: {
-          ...state,
-          intelligenceMode: supervisor.mode,
-          supervisor,
-          authorityTimeline,
-      },
-  }),
-{}});
+  const supervisor = telemetry ?? {
+    mode: "SHADOW",
+    authorityGranted: false,
+    observeOnly: true,
+    advisoryOnly: false,
+    supervisorNote: "Initialized",
+    timestampUtc: new Date().toISOString(),
+  };
+
+  res.json({
+    ok: true,
+    state: {
+      ...state,
+      intelligenceMode: supervisor.mode,
+      supervisor,
+      authorityTimeline,
+    },
+  });
+});
 
 // Stream logs/events to the UI (SSE)
-app.get("/api/events", (req, res) => {
+// Stream logs/events to the UI (SSE)
+app.get("/api/events", async (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -250,43 +283,135 @@ app.get("/api/events", (req, res) => {
 
   const clientId = Date.now();
 
-  const client = { id: clientId, res };
+  const client: SseClient = { id: clientId, res };
   sseClients.push(client);
 
-  res.write(`data: ${JSON.stringify({
+  const writeEvent = (payload: any) => {
+    const eventPayload = toStreamEvent(payload);
+    res.write(`data: ${JSON.stringify(eventPayload)}\n\n`);
+  };
+
+  // canonical connection event
+  writeEvent({
     timestamp_utc: new Date().toISOString(),
-    mode: "CONNECTED",
     symbol: "SYSTEM",
+    mode: "CONNECTED",
     market_state: "SSE_READY",
     observer_recommendation: "STREAM_OPEN",
     finalAction: "connected",
-  })}\n\n`);
+    source: "system",
+  });
+
+  // immediate observer event after connection
+  try {
+  const multi = await buildObserverEventPayload();
+
+  for (const symbol of multi.observedSymbols ?? []) {
+    const symbolState = multi.symbols?.[symbol];
+
+    if (!symbolState) continue;
+
+    writeEvent({
+      timestamp_utc:
+        symbolState.supervisor?.timestampUtc ??
+        multi.timestamp_utc ??
+        new Date().toISOString(),
+
+      symbol,
+
+      mode:
+        symbolState.supervisor?.mode ??
+        symbolState.intelligenceMode ??
+        "SHADOW",
+
+      market_state:
+        symbolState.intelligence?.market_state ??
+        symbolState.calmstack?.posture ??
+        "NO_STATE",
+
+      observer_recommendation:
+        symbolState.intelligence?.observer_recommendation ??
+        symbolState.calmstack?.mode ??
+        "NO_RECOMMENDATION",
+
+      finalAction:
+        symbolState.lastAction?.type ??
+        "NO_ACTION",
+
+      source: "observer",
+    });
+  }
+} catch {
+  writeEvent({
+    timestamp_utc: new Date().toISOString(),
+    symbol: "SYSTEM",
+    mode: "ERROR",
+    market_state: "SSE_ERROR",
+    observer_recommendation: "CHECK_BACKEND",
+    finalAction: "observe",
+    source: "system",
+  });
+}
 
   const interval = setInterval(async () => {
-    const eventPayload = await buildObserverEventPayload();
-    res.write(`data: ${JSON.stringify(eventPayload)}\n\n`);
+    try {
+  const multi = await buildObserverEventPayload();
+
+  for (const symbol of multi.observedSymbols ?? []) {
+    const symbolState = multi.symbols?.[symbol];
+
+    if (!symbolState) continue;
+
+    writeEvent({
+      timestamp_utc:
+        symbolState.supervisor?.timestampUtc ??
+        multi.timestamp_utc ??
+        new Date().toISOString(),
+
+      symbol,
+
+      mode:
+        symbolState.supervisor?.mode ??
+        symbolState.intelligenceMode ??
+        "SHADOW",
+
+      market_state:
+        symbolState.intelligence?.market_state ??
+        symbolState.calmstack?.posture ??
+        "NO_STATE",
+
+      observer_recommendation:
+        symbolState.intelligence?.observer_recommendation ??
+        symbolState.calmstack?.mode ??
+        "NO_RECOMMENDATION",
+
+      finalAction:
+        symbolState.lastAction?.type ??
+        "NO_ACTION",
+
+      source: "observer",
+    });
+  }
+} catch {
+  writeEvent({
+    timestamp_utc: new Date().toISOString(),
+    symbol: "SYSTEM",
+    mode: "ERROR",
+    market_state: "SSE_ERROR",
+    observer_recommendation: "CHECK_BACKEND",
+    finalAction: "observe",
+    source: "system",
+  });
+}
   }, 3000);
 
   req.on("close", () => {
     clearInterval(interval);
+
     const index = sseClients.findIndex((c) => c.id === clientId);
     if (index !== -1) sseClients.splice(index, 1);
+
     res.end();
-  });
-});
-
-app.post("/api/observer/active-symbol", express.json(), (req, res) => {
-  const symbol = String(req.body?.symbol ?? "").toUpperCase().trim();
-
-  if (!symbol) {
-    return res.status(400).json({ ok: false, error: "symbol is required" });
-  }
-
-  setActiveSymbol(symbol);
-
-  return res.json({
-    ok: true,
-    activeSymbol: symbol,
   });
 });
 
@@ -305,7 +430,5 @@ app.listen(PORT, () => {
   console.log(`🟢 API listening on http://localhost:${PORT}`);
   pushLog(`🟢 API listening on http://localhost:${PORT}`);
 });
-function getLatestIntelligenceTelemetry() {
-  throw new Error("Function not implemented.");
-}
+
 

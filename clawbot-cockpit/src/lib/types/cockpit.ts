@@ -48,6 +48,15 @@ export type ObservedSymbolState = {
   observer_recommendation?: string;
   feed_status?: string;
   active?: boolean;
+
+  price?: number | string;
+  allowTrade?: boolean;
+  finalAction?: string;
+  guardrail_status?: string;
+  safeMode?: string;
+  execute?: boolean;
+  open_positions?: number;
+  remaining_trades?: number | string;
 };
 
 export type CockpitSnapshot = {

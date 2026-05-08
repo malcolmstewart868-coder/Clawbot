@@ -16,22 +16,27 @@
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
-    "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
   "include": [
-    "ts/**/*.ts",
-    "src/**/*.ts",
+    "api/**/*.ts",
+    "app/**/*.ts",
+    "config/**/*.ts",
+    "core/**/*.ts",
+    "data/**/*.ts",
     "scripts/**/*.ts",
-    "shared/**/*.ts"
+    "shared/**/*.ts",
+    "*.ts"
   ],
   "exclude": [
     "node_modules",
-    "MirrorModel",
+    "storage",
+    "storage_stress",
+    "stress",
+    "tests",
     "ui",
-    "**/.history",
-    "**/.vscode",
-    "**/AppData/**",
-    "**/History/**"
+    "venv",
+    "**/dist/**",
+    "**/build/**"
   ]
 }
